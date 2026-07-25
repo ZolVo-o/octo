@@ -1,0 +1,22 @@
+# Rust build artifacts
+/target/
+
+# Local OCTO runtime data
+.octo/
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+
+# Local environment overrides
+.env
+.env.*
+!.env.example

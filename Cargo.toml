@@ -1,0 +1,12 @@
+[package]
+name = "octo-tui"
+version = "4.0.0"
+edition = "2021"
+description = "OCTO Arch Linux package manager terminal interface"
+
+[dependencies]
+crossterm = "0.28"
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }

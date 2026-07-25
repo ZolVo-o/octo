@@ -1,0 +1,21 @@
+{
+    "octo": {
+        "version": "1.0.0",
+        "color_scheme": "ocean",
+        "auto_backup": true,
+        "build_threads": 4,
+        "repo_priority": ["aur", "custom"],
+        "tentacle_timeout": 30
+    },
+    "paths": {
+        "db": "$HOME/.octo/db",
+        "pkgs": "$HOME/.octo/pkgs",
+        "logs": "$HOME/.octo/logs",
+        "backups": "$HOME/.octo/backups"
+    },
+    "style": {
+        "emoji_enabled": true,
+        "compact_mode": false,
+        "show_rating": true
+    }
+}
