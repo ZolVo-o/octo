@@ -105,10 +105,12 @@ bool valid(const std::string &value) {
 }
 
 bool yes(const std::string &question) {
+    const char *confirmed = std::getenv("OCTO_CONFIRMED");
+    if (confirmed && std::string(confirmed) == "1") return true;
     std::cout << YELLOW << question << " [да/нет] " << RESET << std::flush;
     std::string answer;
-    std::getline(std::cin, answer);
-    return answer.empty() || answer == "да" || answer == "Да" || answer == "y" ||
+    if (!std::getline(std::cin, answer)) return false;
+    return answer == "да" || answer == "Да" || answer == "y" ||
            answer == "Y" || answer == "yes" || answer == "Yes" || answer == "ок";
 }
 

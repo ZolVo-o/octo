@@ -71,6 +71,7 @@ enum PendingAction {
     Update,
     Remove(String),
     Cleanup(String),
+    Benchmark,
 }
 
 struct ConfirmModal {
@@ -87,8 +88,15 @@ struct ProgressState {
 
 #[derive(Deserialize)]
 struct PackagesDb {
-    installed: Option<Vec<serde_json::Value>>,
+    installed: Option<Vec<PackageRecord>>,
     total: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct PackageRecord {
+    name: String,
+    #[serde(default)]
+    version: String,
 }
 
 #[derive(Deserialize)]
@@ -131,7 +139,7 @@ enum Screen {
 impl Screen {
     fn title(self) -> &'static str {
         match self {
-            Self::Menu => "OCTO 4.0",
+            Self::Menu => "OCTO 5.0",
             Self::Packages => "СПИСОК ПАКЕТОВ OCTO",
             Self::Search => "ПОИСК В AUR (ТЕНТАКЛИ)",
             Self::Update => "ОБНОВЛЕНИЕ СИСТЕМЫ",
@@ -164,6 +172,7 @@ struct App {
     aur_receiver: Option<Receiver<Result<Vec<AurPackage>, String>>>,
     modal: Option<ConfirmModal>,
     progress: Option<ProgressState>,
+    action_result: String,
     shell_history: Vec<String>,
     shell_output: Vec<String>,
     shell_scroll: usize,
@@ -178,11 +187,12 @@ impl Default for App {
             input: String::new(),
             notice: "Система: OK".into(),
             db: load_db_stats(),
-            aur_results: sample_aur_results(),
+            aur_results: Vec::new(),
             aur_loading: false,
             aur_receiver: None,
             modal: None,
             progress: None,
+            action_result: "Действие ещё не запускалось".into(),
             shell_history: Vec::new(),
             shell_output: vec![
                 "🐙 OCTO CLI SHELL v5.0.0 (x86_64 Arch Linux)".into(),
@@ -258,32 +268,6 @@ fn dir_size_bytes(path: &PathBuf) -> u64 {
             }
         })
         .sum()
-}
-
-fn sample_aur_results() -> Vec<AurPackage> {
-    vec![
-        AurPackage {
-            name: "google-chrome".into(),
-            version: "150.0.7871.114".into(),
-            votes: 3420,
-            popularity: 18.42,
-            description: "The popular web browser by Google".into(),
-        },
-        AurPackage {
-            name: "neofetch".into(),
-            version: "7.1.0-2".into(),
-            votes: 45,
-            popularity: 3.14,
-            description: "CLI system information tool".into(),
-        },
-        AurPackage {
-            name: "fastfetch-git".into(),
-            version: "2.10.2.r42-1".into(),
-            votes: 12,
-            popularity: 0.08,
-            description: "Fast system fetch utility".into(),
-        },
-    ]
 }
 
 fn start_aur_search(app: &mut App) {
@@ -525,14 +509,14 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             start_aur_search(app);
         }
         KeyCode::Enter if app.screen == Screen::Remove => {
+            if app.input.trim().is_empty() {
+                app.notice = "Укажите имя пакета перед удалением".into();
+                return;
+            }
             app.modal = Some(ConfirmModal {
                 title: "Подтвердить удаление".into(),
                 message: "Удаление пакета изменит систему. Продолжить?".into(),
-                action: PendingAction::Remove(if app.input.is_empty() {
-                    "neofetch".into()
-                } else {
-                    app.input.clone()
-                }),
+                action: PendingAction::Remove(app.input.clone()),
             });
         }
         KeyCode::Enter if app.screen == Screen::Update => {
@@ -547,6 +531,13 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 title: "Подтвердить очистку".into(),
                 message: "Очистка может удалить кэш и старые сборки.".into(),
                 action: PendingAction::Cleanup("cache".into()),
+            });
+        }
+        KeyCode::Enter if app.screen == Screen::Benchmark => {
+            app.modal = Some(ConfirmModal {
+                title: "Запустить benchmark".into(),
+                message: "Будет выполнен сетевой запрос к AUR API.".into(),
+                action: PendingAction::Benchmark,
             });
         }
         KeyCode::Enter if app.screen == Screen::Shell => execute_shell_command(app),
@@ -589,17 +580,59 @@ fn confirm_modal(app: &mut App) {
     let Some(modal) = app.modal.take() else {
         return;
     };
-    let label = match modal.action {
-        PendingAction::Update => "Обновление системы".to_string(),
-        PendingAction::Remove(package) => format!("Удаление {package}"),
-        PendingAction::Cleanup(target) => format!("Очистка {target}"),
+    let (label, args) = match modal.action {
+        PendingAction::Update => ("Обновление системы".to_string(), vec!["update".to_string()]),
+        PendingAction::Remove(package) => (
+            format!("Удаление {package}"),
+            vec!["remove".to_string(), package],
+        ),
+        PendingAction::Cleanup(target) => (
+            format!("Очистка {target}"),
+            vec!["clean".to_string(), target],
+        ),
+        PendingAction::Benchmark => ("Benchmark AUR".to_string(), vec!["benchmark".to_string()]),
     };
-    app.progress = Some(ProgressState {
-        label: label.clone(),
-        started: Instant::now(),
-        duration: Duration::from_secs(3),
-    });
-    app.notice = format!("{label}: выполняется подготовка backend-действия");
+    app.notice = format!("{label}: выполняется backend");
+    app.action_result = run_backend_action(
+        &args,
+        matches!(
+            args.first().map(String::as_str),
+            Some("update" | "remove" | "clean")
+        ),
+    );
+    app.db = load_db_stats();
+    app.notice = if app.action_result.starts_with("[ OK ]") {
+        format!("{label}: выполнено")
+    } else {
+        format!("{label}: завершено с ошибкой")
+    };
+}
+
+fn run_backend_action(args: &[String], confirmed: bool) -> String {
+    let path = octo_backend_path();
+    let mut command = Command::new(path);
+    command.args(args);
+    if confirmed {
+        command.env("OCTO_CONFIRMED", "1");
+    }
+    match command.output() {
+        Ok(output) => {
+            let mut result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if !stderr.is_empty() {
+                if !result.is_empty() {
+                    result.push('\n');
+                }
+                result.push_str(&stderr);
+            }
+            if output.status.success() {
+                format!("[ OK ]\n{result}")
+            } else {
+                format!("[ FAIL ] код выхода: {}\n{result}", output.status)
+            }
+        }
+        Err(error) => format!("[ FAIL ] ошибка запуска backend: {error}"),
+    }
 }
 
 fn execute_shell_command(app: &mut App) {
@@ -806,7 +839,7 @@ fn draw_header(frame: &mut ratatui::Frame, area: Rect, screen: Screen) {
     let header = Paragraph::new(Line::from(vec![
         Span::styled(" ARCH_OCTO_CORE ", Style::default().fg(PINK)),
         Span::styled(
-            "│ CPU: 14% │ RAM: 1420MB / 16384MB",
+            "│ CPU/RAM: см. monitor │ backend: C++17",
             Style::default().fg(CYAN),
         ),
         Span::styled(
@@ -875,7 +908,7 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, screen: Screen) {
 fn draw_content(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     match app.screen {
         Screen::Menu => draw_menu(frame, area, app),
-        Screen::Packages => draw_packages(frame, area),
+        Screen::Packages => draw_packages(frame, area, app),
         Screen::Search => draw_search(frame, area, app),
         Screen::Stats => draw_stats(frame, area, app),
         Screen::Cleanup => draw_cleanup(frame, area, app),
@@ -883,36 +916,31 @@ fn draw_content(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             frame,
             area,
             Screen::Update,
-            "Готов план обновления: сначала pacman, затем AUR army",
+            app,
+            "Нажмите Enter для запуска реального pacman -Syu",
             &[
-                "🔄 obs-studio 30.0.0-2  → 30.1.2-1        48.2 MB",
-                "🔄 hyprland   0.41.2-1  → 0.42.0-1         7.9 MB",
-                "💡 Нажмите Enter только если готовы запускать backend-обновление.",
+                "Backend выполнит pacman -Syu с запросом подтверждения.",
+                "AUR-пакеты автоматически не обновляются этой кнопкой.",
             ],
         ),
         Screen::Remove => draw_action(
             frame,
             area,
             Screen::Remove,
+            app,
             "Освобождение пакета требует подтверждения backend-командой",
             &[
-                "🗑 neofetch       7.1.0-2       освободит 0.35 MB",
-                "🗑 obs-studio     30.0.0-2      освободит 185 MB",
-                "🗑 hyprland       0.41.2-1      освободит 28.4 MB",
-                "💡 Для привычного режима откройте CLI SHELL и введите: remove <pkg>",
+                "Введите имя пакета в поле ниже и нажмите Enter.",
+                "Backend запросит подтверждение перед удалением.",
             ],
         ),
         Screen::Benchmark => draw_action(
             frame,
             area,
             Screen::Benchmark,
-            "Общий индекс OCTO: 98.4 / 100     Оценка: S+     Состояние: отлично",
-            &[
-                "⚡ AUR API Latency                         42 ms",
-                "🔍 PKGBUILD Parser                         14 ms",
-                "📦 Git Clone Benchmark                   1450 ms",
-                "🐙 Parallel Tentacles (x16)              1210 ms",
-            ],
+            app,
+            "Нажмите Enter для реального запроса к AUR API",
+            &["Benchmark измеряет DNS, TCP, TLS, TTFB и total через curl."],
         ),
         Screen::Shell => draw_shell(frame, area, app),
     }
@@ -1012,11 +1040,11 @@ fn draw_menu(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         cards[0],
     );
     frame.render_widget(
-        metric_card("🔄 Обновления", "2", "готовы к установке", ORANGE),
+        metric_card("🔄 Обновления", "—", "проверьте через update", ORANGE),
         cards[1],
     );
     frame.render_widget(
-        metric_card("⚡ AUR latency", "42 ms", "кэш активен", GREEN),
+        metric_card("⚡ AUR latency", "—", "запустите benchmark", GREEN),
         cards[2],
     );
     frame.render_widget(
@@ -1027,10 +1055,19 @@ fn draw_menu(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
-                Span::styled("Добро пожаловать в OCTO. ", Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
-                Span::styled("Выберите действие слева или откройте привычный CLI SHELL.", Style::default().fg(Color::White)),
+                Span::styled(
+                    "Добро пожаловать в OCTO. ",
+                    Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Выберите действие слева или откройте привычный CLI SHELL.",
+                    Style::default().fg(Color::White),
+                ),
             ]),
-            Line::from(Span::styled("Совет: для старого формата команд нажмите 9 и вводите install/search/remove/update.", Style::default().fg(MUTED))),
+            Line::from(Span::styled(
+                "Совет: пункт 9 открывает CLI SHELL с реальными backend-командами.",
+                Style::default().fg(MUTED),
+            )),
         ])
         .block(panel("🐙 БЫСТРЫЙ СТАРТ", CYAN)),
         chunks[1],
@@ -1193,7 +1230,7 @@ fn metric_card(
     )
 }
 
-fn draw_packages(frame: &mut ratatui::Frame, area: Rect) {
+fn draw_packages(frame: &mut ratatui::Frame, area: Rect, _app: &App) {
     let tabs = Tabs::new([
         "Все",
         "Установленные",
@@ -1210,38 +1247,27 @@ fn draw_packages(frame: &mut ratatui::Frame, area: Rect) {
         .constraints([Constraint::Length(3), Constraint::Min(6)])
         .split(area);
     frame.render_widget(tabs, chunks[0]);
-    let rows = [
-        Row::new([
-            Cell::from("AUR"),
-            Cell::from("google-chrome"),
-            Cell::from("150.0.7871.114"),
-            Cell::from("104.2 MB"),
-        ]),
-        Row::new([
-            Cell::from("AUR"),
-            Cell::from("neofetch"),
-            Cell::from("7.1.0-2"),
-            Cell::from("Установлен"),
-        ]),
-        Row::new([
-            Cell::from("AUR"),
-            Cell::from("fastfetch-git"),
-            Cell::from("2.10.2.r42-1"),
-            Cell::from("4.8 MB"),
-        ]),
-        Row::new([
-            Cell::from("EXTRA"),
-            Cell::from("obs-studio"),
-            Cell::from("30.0.0-2"),
-            Cell::from("Обновить"),
-        ]),
-        Row::new([
-            Cell::from("EXTRA"),
-            Cell::from("hyprland"),
-            Cell::from("0.41.2-1"),
-            Cell::from("Обновить"),
-        ]),
-    ];
+    let packages_path = octo_home().join("db/packages.json");
+    let packages = fs::read_to_string(packages_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<PackagesDb>(&raw).ok())
+        .and_then(|db| db.installed)
+        .unwrap_or_default();
+    let rows: Vec<Row> = packages
+        .iter()
+        .map(|package| {
+            Row::new([
+                Cell::from("local"),
+                Cell::from(package.name.clone()),
+                Cell::from(if package.version.is_empty() {
+                    "unknown".into()
+                } else {
+                    package.version.clone()
+                }),
+                Cell::from("Установлен"),
+            ])
+        })
+        .collect();
     let table = Table::new(
         rows,
         [
@@ -1255,9 +1281,17 @@ fn draw_packages(frame: &mut ratatui::Frame, area: Rect) {
         Row::new(["Репо", "Пакет", "Версия", "Размер / статус"])
             .style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
     )
-    .block(panel("📋 ПАКЕТЫ OCTO (14)", GREEN))
+    .block(panel("📋 ПАКЕТЫ OCTO", GREEN))
     .row_highlight_style(Style::default().bg(BLUE));
-    frame.render_widget(table, chunks[1]);
+    if packages.is_empty() {
+        frame.render_widget(
+            Paragraph::new("В локальной базе OCTO пока нет пакетов.")
+                .block(panel("📋 ПАКЕТЫ OCTO", GREEN)),
+            chunks[1],
+        );
+    } else {
+        frame.render_widget(table, chunks[1]);
+    }
 }
 
 fn draw_search(frame: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1398,15 +1432,15 @@ fn draw_stats(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 fn draw_cleanup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let text = vec![
         Line::from(format!(
-            "Кэш OCTO: {:.1} MB       Сиротские пакеты: требуют backend-проверки",
+            "Кэш OCTO: {:.1} MB       Бэкапы: читаются backend-командой",
             app.db.cache_mb
         )),
-        Line::from("Кэш сборки AUR: 169.5 MB"),
+        Line::from("Кэш сборки AUR: отдельный размер не измеряется"),
         Line::from(""),
-        Line::from("📋 Лог выполнения:"),
-        Line::from("> Ready to perform system cleanup (paccache / orphan sweep)..."),
+        Line::from("📋 Состояние последнего действия:"),
+        Line::from(app.action_result.as_str()),
         Line::from(""),
-        Line::from("[ 🧹 ОЧИСТИТЬ КЭШ PACMAN ]   [ 🗑 УДАЛИТЬ СИРОТ ]   [ ✨ ОЧИСТИТЬ ВСЕ ]"),
+        Line::from("Enter запускает очистку cache после подтверждения."),
     ];
     frame.render_widget(
         Paragraph::new(text).block(panel("🧹 ОСВОБОЖДЕНИЕ ДИСКА OCTO", GREEN)),
@@ -1418,6 +1452,7 @@ fn draw_action(
     frame: &mut ratatui::Frame,
     area: Rect,
     screen: Screen,
+    app: &App,
     subtitle: &str,
     lines: &[&str],
 ) {
@@ -1431,6 +1466,17 @@ fn draw_action(
         Line::from(""),
     ];
     text.extend(lines.iter().map(|line| Line::from(*line)));
+    if screen == Screen::Remove {
+        text.push(Line::from(format!(
+            "Пакет: {}",
+            if app.input.is_empty() {
+                "не выбран"
+            } else {
+                &app.input
+            }
+        )));
+    }
+    text.push(Line::from(app.action_result.as_str()));
     text.push(Line::from(""));
     text.push(Line::from("[ ENTER — продолжить ]       [ ESC — отмена ]"));
     frame.render_widget(

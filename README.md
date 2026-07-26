@@ -599,6 +599,8 @@ OCTO_BACKEND_BIN="$(pwd)/target/octo-backend" ./octo stats
 
 - единый C++17 backend вместо старых Bash-модулей в `lib/`;
 - сохранённый Rust TUI;
+- реальные действия TUI для benchmark, update, remove и clean через backend;
+- пакеты и статистика TUI читаются из текущей локальной базы OCTO;
 - AUR VCS-пакет `octo-git`;
 - AUR-кэш с TTL 300 секунд;
 - сетевое сжатие, таймауты и повторные попытки;
