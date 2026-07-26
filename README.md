@@ -278,14 +278,34 @@ r <package>
 search <query>
 search --aur <query>
 find <query>
+info <package>
+ink <package>
 
 update
 upgrade
 list
 ls
 stats
+cache-stats
 benchmark
 bench
+diagnostic
+diag
+monitor
+backup
+restore <backup>
+security <file>
+catch <package>
+release <package>
+tentacle <query>
+sandbox <package>
+army
+profile <operation> <package>
+predict <package>
+logs
+market
+matrix
+pulse
 clean cache
 clean backups
 clean all

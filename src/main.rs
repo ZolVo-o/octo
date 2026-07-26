@@ -484,11 +484,24 @@ fn shell_help() -> Vec<String> {
         "  remove <pkg>            удалить пакет".into(),
         "  update                  обновить систему".into(),
         "  search <query>          поиск в репозиториях и AUR".into(),
+        "  info <pkg>              информация о пакете".into(),
         "  search --aur <query>    поиск только в AUR".into(),
         "  list                    список установленных пакетов".into(),
         "  stats                   статистика OCTO".into(),
+        "  cache-stats             статистика кэша".into(),
         "  clean cache             очистить кэш".into(),
         "  benchmark               проверить производительность".into(),
+        "  diagnostic              проверить зависимости".into(),
+        "  monitor                 мониторинг системы".into(),
+        "  backup / restore <file> бэкап и восстановление".into(),
+        "  security <file>         проверить PKGBUILD".into(),
+        "  catch/release <pkg>     AUR-операции".into(),
+        "  tentacle/ink <value>    AUR-поиск и информация".into(),
+        "  sandbox <pkg>           установка в sandbox-режиме".into(),
+        "  army                    обновить установленные пакеты".into(),
+        "  profile/predict <...>   мониторинг и прогноз".into(),
+        "  logs                    показать последние ошибки".into(),
+        "  market/matrix/pulse     дополнительные режимы OCTO".into(),
         "  clear                   очистить вывод shell".into(),
         "  exit                    вернуться в TUI".into(),
         "Для произвольных команд системы используйте обычный shell вне OCTO.".into(),
@@ -619,7 +632,35 @@ fn normalize_shell_args(tokens: &[&str]) -> Result<Vec<String>, String> {
         }
         "list" | "ls" => normalized.push("list".into()),
         "stats" => normalized.push("stats".into()),
+        "cache-stats" => normalized.push("cache-stats".into()),
         "benchmark" | "bench" => normalized.push("benchmark".into()),
+        "diagnostic" | "diag" => normalized.push("diagnostic".into()),
+        "monitor" => normalized.push("monitor".into()),
+        "backup" => normalized.push("backup".into()),
+        "army" => normalized.push("army".into()),
+        "logs" => normalized.push("logs".into()),
+        "market" => normalized.push("market".into()),
+        "matrix" => normalized.push("matrix".into()),
+        "pulse" => normalized.push("pulse".into()),
+        "info" | "ink" | "security" | "sandbox" | "catch" | "release" | "tentacle" | "predict" => {
+            if args.len() != 1 {
+                return Err(format!("укажите аргумент: {command} <value>"));
+            }
+            normalized.push(command.into());
+            normalized.push(args[0].into());
+        }
+        "restore" => {
+            if args.len() != 1 {
+                return Err("укажите файл: restore <backup>".into());
+            }
+            normalized = vec!["restore".into(), args[0].into()];
+        }
+        "profile" => {
+            if args.len() != 2 {
+                return Err("укажите операцию и пакет: profile <operation> <pkg>".into());
+            }
+            normalized = vec!["profile".into(), args[0].into(), args[1].into()];
+        }
         "clean" => {
             let target = args
                 .first()
@@ -1377,6 +1418,26 @@ mod tests {
         );
         assert_eq!(normalize_shell_args(&["ls"]).unwrap(), vec!["list"]);
         assert_eq!(normalize_shell_args(&["bench"]).unwrap(), vec!["benchmark"]);
+        assert_eq!(
+            normalize_shell_args(&["diagnostic"]).unwrap(),
+            vec!["diagnostic"]
+        );
+        assert_eq!(
+            normalize_shell_args(&["cache-stats"]).unwrap(),
+            vec!["cache-stats"]
+        );
+    }
+
+    #[test]
+    fn supports_backend_commands_with_arguments() {
+        assert_eq!(
+            normalize_shell_args(&["info", "ripgrep"]).unwrap(),
+            vec!["info", "ripgrep"]
+        );
+        assert_eq!(
+            normalize_shell_args(&["profile", "install", "ripgrep"]).unwrap(),
+            vec!["profile", "install", "ripgrep"]
+        );
     }
 
     #[test]
