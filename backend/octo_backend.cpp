@@ -40,6 +40,19 @@ fs::path backups() { return root() / "backups"; }
 fs::path logs() { return root() / "logs"; }
 constexpr std::chrono::seconds AUR_CACHE_TTL{300};
 
+bool tui_mode() {
+    const char *value = std::getenv("OCTO_TUI");
+    return value && std::string(value) == "1";
+}
+
+std::vector<std::string> sudo_pacman(std::initializer_list<std::string> arguments) {
+    std::vector<std::string> command{"sudo"};
+    if (tui_mode()) command.push_back("-n");
+    command.push_back("pacman");
+    command.insert(command.end(), arguments.begin(), arguments.end());
+    return command;
+}
+
 void init() {
     for (const auto &path : {db(), root() / "pkgs", logs(), backups(), cache()})
         fs::create_directories(path);
@@ -220,7 +233,7 @@ int install_package(const std::string &name, bool aur) {
     if (!yes("Продолжить?")) return 0;
     Result result;
     if (!aur) {
-        result = exec({"sudo", "pacman", "-S", "--noconfirm", name});
+        result = exec(sudo_pacman({"-S", "--noconfirm", name}), tui_mode());
     } else {
         const fs::path directory = fs::path("/tmp") / ("octo-" + name);
         fs::remove_all(directory);
@@ -228,6 +241,7 @@ int install_package(const std::string &name, bool aur) {
         if (!result.code) result = exec({"makepkg", "-si", "--noconfirm"}, false, directory);
         fs::remove_all(directory);
     }
+    if (tui_mode() && !result.output.empty()) std::cout << result.output;
     if (!result.code) {
         package_add(name);
         std::cout << GREEN << "✅ Установлено" << RESET << '\n';
@@ -238,7 +252,8 @@ int install_package(const std::string &name, bool aur) {
 int remove_package(const std::string &name, bool dependencies) {
     if (!valid(name)) return 2;
     if (!yes("Удалить " + name + "?")) return 0;
-    const auto result = exec({"sudo", "pacman", dependencies ? "-Rsc" : "-R", name});
+    const auto result = exec(sudo_pacman({dependencies ? "-Rsc" : "-R", name}), tui_mode());
+    if (tui_mode() && !result.output.empty()) std::cout << result.output;
     if (!result.code) {
         package_remove(name);
         std::cout << GREEN << "✅ Удалено" << RESET << '\n';
@@ -310,7 +325,7 @@ int restore_backup(const fs::path &backup_file) {
         fields >> package;
         if (!valid(package)) continue;
         if (exec({"pacman", "-Q", package}, true).code != 0)
-            result = std::max(result, exec({"sudo", "pacman", "-S", "--noconfirm", package}).code);
+            result = std::max(result, exec(sudo_pacman({"-S", "--noconfirm", package}), tui_mode()).code);
     }
     return result;
 }
@@ -387,7 +402,11 @@ int dispatch(const std::vector<std::string> &a) {
         const size_t index = a[0] == "catch" ? 1 : (aur ? 2 : 1);
         return a.size() > index ? install_package(a[index], aur) : 2;
     }
-    if (a[0] == "update" || a[0] == "-Syu") return exec({"sudo", "pacman", "-Syu"}).code;
+    if (a[0] == "update" || a[0] == "-Syu") {
+        const auto result = exec(sudo_pacman({"-Syu"}), tui_mode());
+        if (tui_mode() && !result.output.empty()) std::cout << result.output;
+        return result.code;
+    }
     if (a[0] == "remove" || a[0] == "release" || a[0] == "-R") {
         const bool deps = a.size() > 1 && (a[1] == "--deps" || a[1] == "-d");
         const size_t index = deps ? 2 : 1;
@@ -450,7 +469,11 @@ int dispatch(const std::vector<std::string> &a) {
     if (a[0] == "matrix") return std::cout << YELLOW << "matrix: демонстрационный режим" << RESET << "\n🐙 🦑 🐚 🐙 🦑\n", 0;
     if (a[0] == "pulse") return std::cout << YELLOW << "pulse: демонстрационный режим" << RESET << "\n🐙 OCTO работает...\n", 0;
     if (a[0] == "interactive") return help(), 0;
-    if (a[0] == "army") return exec({"sudo", "pacman", "-Syu"}).code;
+    if (a[0] == "army") {
+        const auto result = exec(sudo_pacman({"-Syu"}), tui_mode());
+        if (tui_mode() && !result.output.empty()) std::cout << result.output;
+        return result.code;
+    }
     std::cerr << RED << "🐙 Команда не найдена: " << a[0] << RESET << '\n';
     return 1;
 }

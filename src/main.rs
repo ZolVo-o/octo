@@ -612,19 +612,25 @@ fn run_backend_action(args: &[String], confirmed: bool) -> String {
     let path = octo_backend_path();
     let mut command = Command::new(path);
     command.args(args);
+    command.env("OCTO_TUI", "1");
     if confirmed {
         command.env("OCTO_CONFIRMED", "1");
     }
     match command.output() {
         Ok(output) => {
-            let mut result = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if !stderr.is_empty() {
-                if !result.is_empty() {
-                    result.push('\n');
-                }
-                result.push_str(&stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let mut lines = stdout
+                .lines()
+                .map(str::to_owned)
+                .chain(stderr.lines().map(|line| format!("stderr: {line}")))
+                .collect::<Vec<_>>();
+            const MAX_ACTION_LINES: usize = 20;
+            if lines.len() > MAX_ACTION_LINES {
+                lines.truncate(MAX_ACTION_LINES);
+                lines.push("… вывод сокращён; подробный результат доступен в CLI SHELL".into());
             }
+            let result = lines.join("\n");
             if output.status.success() {
                 format!("[ OK ]\n{result}")
             } else {
@@ -1476,11 +1482,13 @@ fn draw_action(
             }
         )));
     }
-    text.push(Line::from(app.action_result.as_str()));
+    text.extend(app.action_result.lines().map(Line::from));
     text.push(Line::from(""));
     text.push(Line::from("[ ENTER — продолжить ]       [ ESC — отмена ]"));
     frame.render_widget(
-        Paragraph::new(text).block(panel(screen.title(), screen.accent())),
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(panel(screen.title(), screen.accent())),
         area,
     );
 }
