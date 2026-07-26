@@ -371,7 +371,7 @@ void help() {
   monitor, diagnostic, market диагностика и мониторинг
   security <PKGBUILD>         проверка безопасности
   backup, restore <file>      бэкап и восстановление
-  matrix, pulse, interactive  текстовые режимы
+  matrix, pulse, interactive  демонстрационные текстовые режимы
   version|-v                  версия backend
 )";
 }
@@ -427,12 +427,26 @@ int dispatch(const std::vector<std::string> &a) {
         }
         return result.code;
     }
-    if (a[0] == "profile") return monitor();
-    if (a[0] == "predict") return std::cout << "Прогноз: 30–60 секунд для " << (a.size() > 1 ? a[1] : "пакета") << '\n', 0;
-    if (a[0] == "logs") return exec({"tail", "-n", "50", (logs() / "errors.log").string()}).code;
-    if (a[0] == "market") return std::cout << "OCTO: Arch Linux package workflow\n", 0;
-    if (a[0] == "matrix") return std::cout << "🐙 🦑 🐚 🐙 🦑\n", 0;
-    if (a[0] == "pulse") return std::cout << "🐙 OCTO работает...\n", 0;
+    if (a[0] == "profile") {
+        std::cout << YELLOW << "profile: пока доступен только общий мониторинг системы" << RESET << '\n';
+        return monitor();
+    }
+    if (a[0] == "predict") {
+        std::cout << YELLOW << "predict: экспериментальная оценка, не измерение времени установки" << RESET << '\n'
+                  << "Прогноз: 30–60 секунд для " << (a.size() > 1 ? a[1] : "пакета") << '\n';
+        return 0;
+    }
+    if (a[0] == "logs") {
+        const auto error_log = logs() / "errors.log";
+        if (!fs::is_regular_file(error_log)) {
+            std::cout << "Лог ошибок пока пуст.\n";
+            return 0;
+        }
+        return exec({"tail", "-n", "50", error_log.string()}).code;
+    }
+    if (a[0] == "market") return std::cout << YELLOW << "market: демонстрационный режим, источник данных ещё не подключён" << RESET << '\n', 0;
+    if (a[0] == "matrix") return std::cout << YELLOW << "matrix: демонстрационный режим" << RESET << "\n🐙 🦑 🐚 🐙 🦑\n", 0;
+    if (a[0] == "pulse") return std::cout << YELLOW << "pulse: демонстрационный режим" << RESET << "\n🐙 OCTO работает...\n", 0;
     if (a[0] == "interactive") return help(), 0;
     if (a[0] == "army") return exec({"sudo", "pacman", "-Syu"}).code;
     std::cerr << RED << "🐙 Команда не найдена: " << a[0] << RESET << '\n';

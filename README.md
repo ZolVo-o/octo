@@ -329,6 +329,8 @@ clean cache
 
 - история введённых команд;
 - история вывода backend;
+- прокрутка вывода клавишами `↑`/`↓`, `PageUp`/`PageDown`, `Home`/`End`;
+- прокрутка колёсиком мыши в терминалах, которые передают mouse events;
 - `clear` для очистки вывода;
 - `Ctrl+L` для очистки вывода;
 - `exit` или `quit` для возврата в TUI.
@@ -520,6 +522,7 @@ cargo test
 
 - нормализацию команды установки;
 - алиасы `i`, `ls`, `bench`;
+- новые команды CLI SHELL и ограничение границ прокрутки вывода;
 - отклонение неизвестных команд;
 - отклонение shell-инъекций;
 - отклонение лишних аргументов.
@@ -532,6 +535,22 @@ g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -o target/octo-backend
 makepkg --printsrcinfo > .SRCINFO
 namcap PKGBUILD
 ```
+
+Безопасная ручная проверка backend без изменения пакетов:
+
+```bash
+./octo version
+./octo help
+./octo stats
+./octo cache-stats
+./octo diagnostic
+./octo monitor
+./octo logs
+```
+
+Команды `install`, `remove`, `update`, `army`, `restore` и `clean` могут менять
+систему или данные. Проверяйте их только на тестовой системе или после явного
+подтверждения действия.
 
 ## Устранение проблем
 
@@ -585,6 +604,11 @@ OCTO_BACKEND_BIN="$(pwd)/target/octo-backend" ./octo stats
 - сетевое сжатие, таймауты и повторные попытки;
 - benchmark с отдельными метриками DNS, TCP, TLS, TTFB и total;
 - GitHub preview в `assets/octo-preview.svg`.
+
+Команды `market`, `matrix`, `pulse` и `predict` пока имеют демонстрационный или
+экспериментальный статус. Они не должны восприниматься как полноценная аналитика.
+`profile` пока запускает общий мониторинг системы, а не профилирование отдельной
+операции.
 
 ## Планы
 

@@ -8,7 +8,10 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+        MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -324,12 +327,16 @@ fn fetch_aur_results(query: &str) -> Result<Vec<AurPackage>, String> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let result = run(&mut terminal);
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     result?;
     Ok(())
@@ -341,8 +348,14 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> 
         app.tick();
         terminal.draw(|frame| draw(frame, &app))?;
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                handle_key(&mut app, key);
+            match event::read()? {
+                Event::Key(key) => handle_key(&mut app, key),
+                Event::Mouse(mouse) if app.screen == Screen::Shell => match mouse.kind {
+                    MouseEventKind::ScrollUp => scroll_shell(&mut app, -3),
+                    MouseEventKind::ScrollDown => scroll_shell(&mut app, 3),
+                    _ => {}
+                },
+                _ => {}
             }
         }
     }
@@ -375,6 +388,21 @@ impl App {
             }
         }
     }
+}
+
+fn scroll_shell(app: &mut App, delta: isize) {
+    let visible = 8usize;
+    let max_scroll = app.shell_output.len().saturating_sub(visible);
+    let current = if app.shell_scroll == usize::MAX {
+        max_scroll
+    } else {
+        app.shell_scroll.min(max_scroll)
+    };
+    app.shell_scroll = if delta.is_negative() {
+        current.saturating_sub(delta.unsigned_abs())
+    } else {
+        current.saturating_add(delta as usize).min(max_scroll)
+    };
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) {
@@ -1463,7 +1491,7 @@ fn draw_shell(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_shell_args;
+    use super::{normalize_shell_args, scroll_shell, App};
 
     #[test]
     fn normalizes_common_install_command() {
@@ -1501,6 +1529,19 @@ mod tests {
             normalize_shell_args(&["profile", "install", "ripgrep"]).unwrap(),
             vec!["profile", "install", "ripgrep"]
         );
+    }
+
+    #[test]
+    fn scrolls_shell_output_with_bounded_positions() {
+        let mut app = App::default();
+        app.shell_output = (0..20).map(|line| line.to_string()).collect();
+
+        scroll_shell(&mut app, -3);
+        assert_eq!(app.shell_scroll, 9);
+        scroll_shell(&mut app, 100);
+        assert_eq!(app.shell_scroll, 12);
+        scroll_shell(&mut app, -100);
+        assert_eq!(app.shell_scroll, 0);
     }
 
     #[test]
