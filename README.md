@@ -5,7 +5,7 @@
 ![OCTO Rust TUI preview](assets/octo-preview.svg)
 
 OCTO — экспериментальный пакетный менеджер и терминальный интерфейс для Arch
-Linux. Проект объединяет существующий Bash backend с полноэкранным TUI на Rust.
+Linux. Проект объединяет C++ backend с полноэкранным TUI на Rust.
 Интерфейс вдохновлён системными терминалами, CRT-мониторами и панелями управления
 из референсов: тёмный фон, cyan-рамки, цветовые статусы и клавиатурная навигация.
 
@@ -20,7 +20,7 @@ Linux. Проект объединяет существующий Bash backend �
 - [Установка и первый запуск](#установка-и-первый-запуск)
 - [Rust TUI](#rust-tui)
 - [CLI SHELL](#cli-shell)
-- [Команды Bash CLI](#команды-bash-cli)
+- [CLI-команды](#cli-команды)
 - [Конфигурация](#конфигурация)
 - [Безопасность](#безопасность)
 - [Разработка](#разработка)
@@ -55,11 +55,11 @@ Linux. Проект объединяет существующий Bash backend �
 - контекстная нижняя панель: обычные подсказки в меню и shell-подсказки в CLI SHELL;
 - история вывода и команд внутри CLI SHELL.
 
-### Bash backend
+### C++ backend
 
-Backend содержит команды для работы с пакетами, AUR, кэшем, бэкапами,
-диагностикой, безопасностью и мониторингом. Старый Bash CLI сохраняется и может
-использоваться отдельно от Rust TUI.
+Backend написан на C++17 и собирается в исполняемый файл `target/octo-backend`.
+Папка `lib/` и старые Bash-модули удалены. Bash используется только в тонком
+launcher-файле `octo`, который выбирает Rust TUI или запускает C++ backend.
 
 ### Пакетные функции
 
@@ -85,35 +85,27 @@ Backend содержит команды для работы с пакетами,
 octo/                         корень проекта
 ├── Cargo.toml                Rust-проект TUI
 ├── src/
-│   ├── main.rs                Rust-приложение ratatui/crossterm
-│   └── octo.sh                legacy-файл, зарезервирован под исходный layout
-├── octo                      основной Bash launcher/backend
-├── lib/                      Bash-модули
-│   ├── ui.sh                 legacy UI, цвета и анимации
-│   ├── interactive.sh        legacy интерактивное меню
-│   ├── manager.sh             управление пакетами и кэшем
-│   ├── repo.sh                официальные репозитории и обновления
-│   ├── search.sh              поиск
-│   ├── performance.sh         кэш и производительность
-│   ├── monitor.sh             бенчмарк и мониторинг
-│   ├── diagnostic.sh          диагностика
-│   └── error_handler.sh       ошибки и сетевые проверки
+│   └── main.rs                Rust-приложение ratatui/crossterm
+├── octo                      launcher для C++ backend и Rust TUI
+├── backend/
+│   └── octo_backend.cpp       исходный код C++ backend
 ├── etc/config.json            конфигурация проекта
 └── README.md
 ```
 
-### Как соединены Rust и Bash
+### Как соединены Rust и C++
 
 Rust TUI отвечает за экран, ввод и маршрутизацию команд. Когда пользователь
-вводит поддержанную команду в CLI SHELL, Rust запускает Bash backend отдельными
+вводит поддержанную команду в CLI SHELL, Rust запускает C++ backend отдельными
 аргументами:
 
 ```text
-Rust TUI → whitelist-команд → ./octo <command> <args>
+Rust TUI → whitelist-команд → ./octo → target/octo-backend <command> <args>
 ```
 
-Для запуска backend используется переменная `OCTO_BACKEND`. Если она не задана,
-приложение сначала ищет `./octo` в текущем каталоге.
+Для переопределения пути к backend используется переменная `OCTO_BACKEND_BIN`.
+Если она не задана, launcher выбирает локальный `target/octo-backend`, а после
+установки — `/usr/lib/octo/octo-backend`.
 
 ## Требования
 
@@ -132,14 +124,13 @@ rustc --version
 cargo --version
 ```
 
-### Для Bash backend
+### Для C++ backend
 
 Основные зависимости:
 
-- Bash;
+- `g++` с поддержкой C++17;
 - `curl`;
 - `git`;
-- `jq`;
 - `gpg`;
 - `pacman`;
 - `makepkg`;
@@ -154,20 +145,49 @@ cargo --version
 
 ## Установка и первый запуск
 
+### Установка как AUR-пакета
+
+В репозитории подготовлены `PKGBUILD` и `.SRCINFO` для VCS-пакета `octo-git`.
+Пакет можно собрать и установить через `makepkg`:
+
+```bash
+git clone https://github.com/ZolVo-o/octo.git
+cd octo
+makepkg -si
+```
+
+Для обновления VCS-пакета повторите команду в каталоге сборки:
+
+```bash
+git pull
+makepkg -si
+```
+
+После установки команды доступны глобально:
+
+```bash
+octo help
+octo tui
+```
+
+Для публикации в AUR файл `PKGBUILD` нужно положить в отдельный AUR-клон
+`octo-git`, сгенерировать `.SRCINFO` командой `makepkg --printsrcinfo > .SRCINFO`
+и отправить оба файла в AUR Git-репозиторий.
+
 Склонируйте или скопируйте проект и перейдите в его каталог:
 
 ```bash
 cd /path/to/octo
 ```
 
-Сделайте Bash launcher исполняемым:
+Сделайте launcher исполняемым:
 
 ```bash
 chmod +x ./octo
 ```
 
-Или используйте установщик, который создаёт ссылку в `~/.local/bin` и собирает
-Rust TUI при наличии Cargo:
+Или используйте установщик, который создаёт ссылку в `~/.local/bin`, собирает
+C++ backend и затем Rust TUI при наличии Cargo:
 
 ```bash
 chmod +x ./install.sh
@@ -299,9 +319,9 @@ CLI SHELL — это маршрутизатор команд OCTO, а не ун�
 Произвольные команды вроде `echo`, `rm`, `chmod` и `sudo` через него не
 исполняются. Для обычных системных команд используйте внешний shell.
 
-## Команды Bash CLI
+## CLI-команды
 
-Старый launcher можно использовать напрямую:
+Launcher можно использовать напрямую:
 
 ```bash
 ./octo install <package>
@@ -363,12 +383,13 @@ etc/config.json
 ```json
 {
   "octo": {
-    "version": "1.0.0",
+    "version": "5.0.0",
     "color_scheme": "ocean",
     "auto_backup": true,
     "build_threads": 4,
     "repo_priority": ["aur", "custom"],
-    "tentacle_timeout": 30
+    "tentacle_timeout": 8,
+    "aur_cache_ttl": 300
   },
   "paths": {
     "db": "$HOME/.octo/db",
@@ -386,7 +407,7 @@ etc/config.json
 
 ### Рабочие данные
 
-Во время запуска Bash backend создаёт каталог:
+Во время запуска C++ backend создаёт каталог:
 
 ```text
 $HOME/.octo/
@@ -401,12 +422,21 @@ $HOME/.octo/
 
 Не удаляйте этот каталог вручную, если хотите сохранить историю и бэкапы.
 
+Поиск AUR кэшируется на 300 секунд в `~/.octo/cache`. Повторный запрос с тем же
+поисковым словом не обращается к сети, пока запись свежая. Для сетевых запросов
+используются сжатие HTTP, ограничение времени подключения и повтор только при
+временных сетевых ошибках.
+
+`octo benchmark` намеренно обходит кэш и показывает отдельные метрики DNS,
+TCP-соединения, TLS, ожидания первого байта и полное время ответа. Это позволяет
+отличить медленный интернет от медленного ответа AUR.
+
 ### Путь к backend
 
 Если TUI запускается из другого каталога, задайте путь явно:
 
 ```bash
-OCTO_BACKEND=/absolute/path/to/octo ./octo tui
+OCTO_BACKEND_BIN=/absolute/path/to/target/octo-backend ./octo tui
 ```
 
 ## Безопасность
@@ -423,7 +453,7 @@ OCTO_BACKEND=/absolute/path/to/octo ./octo tui
 
 ### Что всё ещё требует осторожности
 
-Bash backend выполняет системные операции и может обращаться к `sudo pacman`.
+C++ backend выполняет системные операции и может обращаться к `sudo pacman`.
 Перед подтверждением установки, удаления, обновления или очистки:
 
 1. проверьте имя пакета;
@@ -474,11 +504,13 @@ cargo test
 - отклонение shell-инъекций;
 - отклонение лишних аргументов.
 
-### Проверка Bash
+### Проверка launcher, C++ backend и AUR-метаданных
 
 ```bash
 bash -n octo
-bash -n lib/ui.sh lib/interactive.sh
+g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -o target/octo-backend
+makepkg --printsrcinfo > .SRCINFO
+namcap PKGBUILD
 ```
 
 ## Устранение проблем
@@ -493,12 +525,12 @@ rustc --version
 cargo --version
 ```
 
-### `./octo tui` не находит backend
+### `./octo tui` не находит TUI или backend
 
 Укажите абсолютный путь:
 
 ```bash
-OCTO_BACKEND="$(pwd)/octo" ./octo tui
+OCTO_BACKEND_BIN="$(pwd)/target/octo-backend" ./octo stats
 ```
 
 ### Интерфейс выглядит тесно или таблица обрезается
@@ -520,6 +552,20 @@ OCTO_BACKEND="$(pwd)/octo" ./octo tui
 Это ожидаемо для операций, изменяющих системные пакеты. Rust TUI не обходит
 проверку прав и не сохраняет пароль.
 
+## Версия и релиз
+
+Текущая версия проекта: **5.0.0**.
+
+Релиз `v5.0.0` включает:
+
+- единый C++17 backend вместо старых Bash-модулей в `lib/`;
+- сохранённый Rust TUI;
+- AUR VCS-пакет `octo-git`;
+- AUR-кэш с TTL 300 секунд;
+- сетевое сжатие, таймауты и повторные попытки;
+- benchmark с отдельными метриками DNS, TCP, TLS, TTFB и total;
+- GitHub preview в `assets/octo-preview.svg`.
+
 ## Планы
 
 - расширить чтение `~/.octo/db` до полноценного списка пакетов в таблицах;
@@ -528,7 +574,6 @@ OCTO_BACKEND="$(pwd)/octo" ./octo tui
 - добавить сохранение настроек темы;
 - сделать отдельный release-бинарник;
 - добавить интеграционные тесты backend-команд;
-- унифицировать Bash и Rust-модели пакета;
 - улучшить адаптацию интерфейса под узкие терминалы.
 
 ## Вклад в проект

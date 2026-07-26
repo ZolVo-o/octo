@@ -1,11 +1,12 @@
 {
     "octo": {
-        "version": "1.0.0",
+        "version": "5.0.0",
         "color_scheme": "ocean",
         "auto_backup": true,
         "build_threads": 4,
         "repo_priority": ["aur", "custom"],
-        "tentacle_timeout": 30
+        "tentacle_timeout": 8,
+        "aur_cache_ttl": 300
     },
     "paths": {
         "db": "$HOME/.octo/db",

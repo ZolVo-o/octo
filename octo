@@ -1,262 +1,34 @@
-#!/bin/bash
-
-# OCTO 4.0 - БЫСТРЫЙ, БЕЗОПАСНЫЙ, УМНЫЙ
-
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
 OCTO_SRC="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-OCTO_ROOT="$HOME/.octo"
-OCTO_LIB="$OCTO_SRC/lib"
+if [[ -x "${OCTO_SRC}/target/octo-backend" ]]; then
+    DEFAULT_BACKEND="${OCTO_SRC}/target/octo-backend"
+elif [[ -x /usr/lib/octo/octo-backend ]]; then
+    DEFAULT_BACKEND=/usr/lib/octo/octo-backend
+else
+    DEFAULT_BACKEND="${OCTO_SRC}/target/octo-backend"
+fi
+BACKEND="${OCTO_BACKEND_BIN:-${DEFAULT_BACKEND}}"
 
-# Загружаем модули
-for module in db search builder parser manager repo deps security security_plus performance monitor diagnostic error_handler ui interactive; do
-    if [ -f "$OCTO_LIB/$module.sh" ]; then
-        source "$OCTO_LIB/$module.sh"
+if [[ "${1:-}" == "tui" || "${1:-}" == "ui" ]]; then
+    shift
+    if [[ -x "${OCTO_SRC}/target/debug/octo-tui" ]]; then
+        OCTO_BACKEND="$BACKEND" exec "${OCTO_SRC}/target/debug/octo-tui" "$@"
+    elif [[ -x /usr/lib/octo/octo-tui ]]; then
+        OCTO_BACKEND="$BACKEND" exec /usr/lib/octo/octo-tui "$@"
+    elif command -v cargo >/dev/null 2>&1 && [[ -f "${OCTO_SRC}/Cargo.toml" ]]; then
+        OCTO_BACKEND="$BACKEND" exec cargo run --quiet --manifest-path "${OCTO_SRC}/Cargo.toml" --bin octo-tui -- "$@"
     else
-        echo "⚠️  Модуль $module не найден, пропускаем"
+        echo "🐙 Rust TUI не собран. Установите Rust и выполните: cargo build" >&2
+        exit 1
     fi
-done
-
-# Инициализация
-mkdir -p "$OCTO_ROOT"/{db,pkgs,logs,backups,cache}
-
-if [ ! -f "$OCTO_ROOT/db/packages.json" ]; then
-    echo '{"installed": [], "total": 0}' > "$OCTO_ROOT/db/packages.json"
 fi
 
-if [ ! -f "$OCTO_ROOT/db/history.json" ]; then
-    echo '{"history": []}' > "$OCTO_ROOT/db/history.json"
+if [[ ! -x "$BACKEND" ]]; then
+    echo "🐙 C++ backend не собран. Запустите ./install.sh или выполните:" >&2
+    echo "   g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -o target/octo-backend" >&2
+    exit 1
 fi
 
-init_cache 2>/dev/null || true
-
-# Главная функция
-main() {
-    case "$1" in
-        "install"|"-S")
-            if [ "$2" = "--aur" ] || [ "$2" = "-a" ]; then
-                install_with_deps "$3"
-            elif [ "$2" = "--repo" ] || [ "$2" = "-r" ]; then
-                install_from_repo "$3"
-            else
-                install_from_repo "$2"
-            fi
-            ;;
-        "remove"|"-R")
-            if [ "$2" = "--deps" ] || [ "$2" = "-d" ]; then
-                release_with_deps "$3"
-            else
-                release_package "$2"
-            fi
-            ;;
-        "update"|"-Syu")
-            full_system_update
-            ;;
-        "search"|"-Ss")
-            if [ "$2" = "--aur" ] || [ "$2" = "-a" ]; then
-                fast_aur_search "$3"
-            else
-                echo -e "\033[36m🔍 Поиск: $2\033[0m"
-                echo -e "\033[33mОфициальные репозитории:\033[0m"
-                search_repo "$2"
-                echo -e "\n\033[35mAUR:\033[0m"
-                fast_aur_search "$2"
-            fi
-            ;;
-        "info"|"-Si")
-            repo_info "$2"
-            echo -e "\n\033[35mAUR:\033[0m"
-            ink_info "$2"
-            ;;
-        "list"|"-Q")
-            echo -e "\033[33mОфициальные пакеты:\033[0m"
-            pacman -Qe 2>/dev/null || echo "  Нет официальных пакетов"
-            echo -e "\n\033[35mAUR пакеты:\033[0m"
-            octo_shell
-            ;;
-        "catch")
-            show_install_animation "$2"
-            install_with_deps "$2"
-            ;;
-        "release")
-            if [ "$2" = "--deps" ] || [ "$2" = "-d" ]; then
-                release_with_deps "$3"
-            else
-                release_package "$2"
-            fi
-            ;;
-        "tentacle")
-            show_search_animation "$2"
-            fast_aur_search "$2"
-            ;;
-        "ink")
-            ink_info "$2"
-            ;;
-        "army")
-            show_header "Армия OCTO" "Обновляем всё!"
-            octo_army
-            show_footer "Армия обновлена!"
-            ;;
-        "shell")
-            octo_shell
-            ;;
-        "security")
-            show_header "Безопасность" "Проверка $2"
-            advanced_pkgbuild_scan "$2"
-            verify_pgp_keys "$2"
-            analyze_dependencies "$2"
-            check_exploits "$2"
-            check_repo_security
-            show_footer "Проверка завершена!"
-            ;;
-        "sandbox")
-            sandbox_build "$2"
-            ;;
-        "benchmark")
-            benchmark
-            ;;
-        "profile")
-            profile_operation "$2" "$3"
-            ;;
-        "predict")
-            predict_time "$2"
-            ;;
-        "monitor")
-            monitor_resources
-            ;;
-        "logs")
-            analyze_logs
-            ;;
-        "backup")
-            system_backup
-            ;;
-        "restore")
-            restore_backup "$2"
-            ;;
-        "clean")
-            case "$2" in
-                "cache")
-                    show_header "Очистка" "Кэш"
-                    clean_cache
-                    show_footer "Кэш очищен!"
-                    ;;
-                "backups")
-                    show_header "Очистка" "Бэкапы"
-                    clean_backups
-                    show_footer "Бэкапы очищены!"
-                    ;;
-                "all")
-                    show_header "Очистка" "Всё"
-                    clean_cache
-                    clean_backups
-                    show_footer "Всё очищено!"
-                    ;;
-                *)
-                    echo "🐙 Используй: cache, backups, all"
-                    ;;
-            esac
-            ;;
-        "cache-stats")
-            cache_stats
-            ;;
-        "stats")
-            octo_stats
-            ;;
-        "diagnostic"|"diag")
-            full_diagnostic
-            ;;
-        "market")
-            market_position
-            ;;
-        "interactive"|"-i")
-            interactive_menu
-            ;;
-        "tui"|"ui")
-            # Новый Rust TUI. Bash-команды выше остаются совместимым backend-слоем.
-            if [ -x "$OCTO_SRC/target/debug/octo-tui" ]; then
-                exec "$OCTO_SRC/target/debug/octo-tui"
-            elif command -v cargo &>/dev/null && [ -f "$OCTO_SRC/Cargo.toml" ]; then
-                cargo run --manifest-path "$OCTO_SRC/Cargo.toml" --bin octo-tui
-            else
-                echo "🐙 Rust TUI не собран. Установите Rust и выполните: cargo build"
-                exit 1
-            fi
-            ;;
-        "matrix")
-            octo_matrix
-            ;;
-        "pulse")
-            pulsing_octo "OCTO работает..."
-            ;;
-        "help"|"-h"|"--help")
-            mega_help
-            ;;
-        "version"|"-v")
-            echo "🐙 OCTO 4.0 - Супер-осьминог"
-            echo "⚡ Быстрый | 🛡️ Безопасный | 🧠 Умный"
-            echo "📦 С прогресс-барами и анимациями!"
-            ;;
-        *)
-            echo "🐙 OCTO: команда '$1' не найдена. Используй 'octo help'"
-            exit 1
-            ;;
-    esac
-}
-
-# Супер-помощь
-mega_help() {
-    echo -e "\033[36m"
-    cat << "HELP"
-🐙 OCTO 4.0 - Супер-осьминог
-=============================
-
-📦 УПРАВЛЕНИЕ ПАКЕТАМИ:
-  install, -S <pkg>         - Установить из репозиториев
-  install --aur <pkg>       - Установить из AUR
-  remove, -R <pkg>          - Удалить пакет
-  remove -d <pkg>           - Удалить с зависимостями
-  update, -Syu              - Полное обновление системы
-  search, -Ss <запрос>      - Умный поиск
-  info, -Si <pkg>           - Информация
-
-🐙 AUR КОМАНДЫ:
-  catch <pkg>               - Поймать из AUR (с анимацией)
-  release <pkg>             - Отпустить пакет
-  tentacle <запрос>         - Быстрый поиск в AUR (с анимацией)
-  ink <pkg>                 - Информация из AUR
-  army                      - Обновить все AUR
-
-🛡️ БЕЗОПАСНОСТЬ:
-  security <pkg>            - Проверка безопасности (с красивым UI)
-
-⚡ ПРОИЗВОДИТЕЛЬНОСТЬ:
-  benchmark                 - Бенчмарк скорости
-  predict <pkg>             - Прогноз времени
-  cache-stats               - Статистика кэша
-
-📊 МОНИТОРИНГ:
-  monitor                   - Мониторинг ресурсов
-  diagnostic, diag          - Полная диагностика
-  market                    - Позиция на рынке
-
-🎨 UI И АНИМАЦИИ:
-  interactive, -i           - Интерактивный режим
-  matrix                    - Матрица осьминогов
-  pulse                     - Пульсирующий осьминог
-
-💾 БЭКАПЫ:
-  backup                    - Создать бэкап
-
-🧹 ОБСЛУЖИВАНИЕ:
-  clean cache               - Очистить кэш
-  clean backups             - Удалить старые бэкапы
-  stats                     - Статистика
-  shell                     - Список AUR пакетов
-
-🐙 OCTO - твой идеальный пакетный менеджер!
-HELP
-    echo -e "\033[0m"
-}
-
-# Запускаем
-main "$@"
+exec "$BACKEND" "$@"

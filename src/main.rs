@@ -545,7 +545,7 @@ fn execute_shell_command(app: &mut App) {
         }
     };
     let path = octo_backend_path();
-    let result = Command::new("bash").arg(path).args(&args).output();
+    let result = Command::new(path).args(&args).output();
     match result {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);

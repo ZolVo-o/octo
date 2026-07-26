@@ -1,0 +1,18 @@
+pkgbase = octo-git
+	pkgdesc = Arch Linux package manager with a Rust TUI and C++ backend
+	pkgver = r1
+	pkgrel = 1
+	url = https://github.com/ZolVo-o/octo
+	arch = x86_64
+	license = MIT
+	makedepends = gcc
+	makedepends = rust
+	depends = curl
+	depends = git
+	depends = pacman
+	provides = octo
+	conflicts = octo
+	source = git+https://github.com/ZolVo-o/octo.git
+	sha256sums = SKIP
+
+pkgname = octo-git

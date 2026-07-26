@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "octo-tui"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "crossterm",
  "ratatui",
