@@ -163,6 +163,7 @@ struct App {
     progress: Option<ProgressState>,
     shell_history: Vec<String>,
     shell_output: Vec<String>,
+    shell_scroll: usize,
     running: bool,
 }
 
@@ -181,10 +182,11 @@ impl Default for App {
             progress: None,
             shell_history: Vec::new(),
             shell_output: vec![
-                "🐙 OCTO CLI SHELL v4.0.0 (x86_64 Arch Linux)".into(),
-                "Привычный режим для старых команд: install, search, remove, update.".into(),
+                "🐙 OCTO CLI SHELL v5.0.0 (x86_64 Arch Linux)".into(),
+                "Команды backend: install, search, info, diagnostic, cache-stats и другие.".into(),
                 "Введите 'help' для подсказки. Введите 'exit', чтобы вернуться в TUI.".into(),
             ],
+            shell_scroll: usize::MAX,
             running: true,
         }
     }
@@ -433,6 +435,53 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             if key.modifiers.contains(KeyModifiers::CONTROL) && app.screen == Screen::Shell =>
         {
             app.shell_output.clear();
+            app.shell_scroll = usize::MAX;
+        }
+        KeyCode::PageUp if app.screen == Screen::Shell => {
+            let visible = 8usize;
+            let max_scroll = app.shell_output.len().saturating_sub(visible);
+            let current = if app.shell_scroll == usize::MAX {
+                max_scroll
+            } else {
+                app.shell_scroll.min(max_scroll)
+            };
+            app.shell_scroll = current.saturating_sub(visible);
+        }
+        KeyCode::PageDown if app.screen == Screen::Shell => {
+            let visible = 8usize;
+            let max_scroll = app.shell_output.len().saturating_sub(visible);
+            let current = if app.shell_scroll == usize::MAX {
+                max_scroll
+            } else {
+                app.shell_scroll.min(max_scroll)
+            };
+            app.shell_scroll = (current + visible).min(max_scroll);
+        }
+        KeyCode::Up if app.screen == Screen::Shell => {
+            let visible = 8usize;
+            let max_scroll = app.shell_output.len().saturating_sub(visible);
+            let current = if app.shell_scroll == usize::MAX {
+                max_scroll
+            } else {
+                app.shell_scroll.min(max_scroll)
+            };
+            app.shell_scroll = current.saturating_sub(1);
+        }
+        KeyCode::Down if app.screen == Screen::Shell => {
+            let visible = 8usize;
+            let max_scroll = app.shell_output.len().saturating_sub(visible);
+            let current = if app.shell_scroll == usize::MAX {
+                max_scroll
+            } else {
+                app.shell_scroll.min(max_scroll)
+            };
+            app.shell_scroll = (current + 1).min(max_scroll);
+        }
+        KeyCode::Home if app.screen == Screen::Shell => {
+            app.shell_scroll = 0;
+        }
+        KeyCode::End if app.screen == Screen::Shell => {
+            app.shell_scroll = usize::MAX;
         }
         KeyCode::Char(c)
             if matches!(app.screen, Screen::Search | Screen::Remove | Screen::Shell) =>
@@ -543,6 +592,7 @@ fn execute_shell_command(app: &mut App) {
     }
     if command == "clear" {
         app.shell_output.clear();
+        app.shell_scroll = usize::MAX;
         return;
     }
     if command == "help" || (command == "octo" && tokens.get(1) == Some(&"help")) {
@@ -559,6 +609,7 @@ fn execute_shell_command(app: &mut App) {
     };
     let path = octo_backend_path();
     let result = Command::new(path).args(&args).output();
+    app.shell_scroll = usize::MAX;
     match result {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1370,9 +1421,17 @@ fn draw_shell(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         .iter()
         .map(|line| Line::from(line.as_str()))
         .collect();
+    let visible = usize::from(chunks[0].height.saturating_sub(2));
+    let max_scroll = lines.len().saturating_sub(visible);
+    let scroll = if app.shell_scroll == usize::MAX {
+        max_scroll
+    } else {
+        app.shell_scroll.min(max_scroll)
+    };
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
+            .scroll((scroll.min(u16::MAX as usize) as u16, 0))
             .block(panel("OCTO INTERACTIVE CLI SHELL [tty1]", CYAN)),
         chunks[0],
     );
@@ -1390,6 +1449,10 @@ fn draw_shell(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             Line::from(""),
             Line::from(Span::styled(
                 "Примеры: install neofetch --aur  •  search firefox  •  clean cache  •  help",
+                Style::default().fg(MUTED),
+            )),
+            Line::from(Span::styled(
+                "Прокрутка: ↑/↓, PageUp/PageDown, Home/End",
                 Style::default().fg(MUTED),
             )),
         ])
