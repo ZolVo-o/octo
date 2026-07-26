@@ -74,6 +74,11 @@ enum PendingAction {
     Benchmark,
 }
 
+struct PasswordPrompt {
+    action: PendingAction,
+    password: String,
+}
+
 struct ConfirmModal {
     title: String,
     message: String,
@@ -171,6 +176,7 @@ struct App {
     aur_loading: bool,
     aur_receiver: Option<Receiver<Result<Vec<AurPackage>, String>>>,
     modal: Option<ConfirmModal>,
+    password_prompt: Option<PasswordPrompt>,
     progress: Option<ProgressState>,
     action_result: String,
     shell_history: Vec<String>,
@@ -191,6 +197,7 @@ impl Default for App {
             aur_loading: false,
             aur_receiver: None,
             modal: None,
+            password_prompt: None,
             progress: None,
             action_result: "Действие ещё не запускалось".into(),
             shell_history: Vec::new(),
@@ -394,6 +401,27 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         app.running = false;
         return;
     }
+    if app.password_prompt.is_some() {
+        match key.code {
+            KeyCode::Char(c) => {
+                if let Some(prompt) = app.password_prompt.as_mut() {
+                    prompt.password.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(prompt) = app.password_prompt.as_mut() {
+                    prompt.password.pop();
+                }
+            }
+            KeyCode::Enter => submit_password(app),
+            KeyCode::Esc => {
+                app.password_prompt = None;
+                app.notice = "Операция отменена: пароль не введён".into();
+            }
+            _ => {}
+        }
+        return;
+    }
     if app.modal.is_some() {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => confirm_modal(app),
@@ -580,7 +608,52 @@ fn confirm_modal(app: &mut App) {
     let Some(modal) = app.modal.take() else {
         return;
     };
-    let (label, args) = match modal.action {
+    let needs_sudo = matches!(
+        modal.action,
+        PendingAction::Update | PendingAction::Remove(_) | PendingAction::Cleanup(_)
+    );
+    if needs_sudo {
+        app.password_prompt = Some(PasswordPrompt {
+            action: modal.action,
+            password: String::new(),
+        });
+        return;
+    }
+    execute_pending_action(app, modal.action, None);
+}
+
+fn submit_password(app: &mut App) {
+    let Some(prompt) = app.password_prompt.take() else {
+        return;
+    };
+    if prompt.password.is_empty() {
+        app.action_result = "[ FAIL ] пароль не введён".into();
+        app.notice = "Операция отменена".into();
+        return;
+    }
+    let result = Command::new("sudo")
+        .args(["-S", "-v"])
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                stdin.write_all(prompt.password.as_bytes())?;
+                stdin.write_all(b"\n")?;
+            }
+            child.wait_with_output()
+        });
+    if result.as_ref().is_err() || result.as_ref().is_ok_and(|output| !output.status.success()) {
+        app.action_result = "[ FAIL ] пароль sudo не принят".into();
+        app.notice = "Операция отменена".into();
+        return;
+    }
+    execute_pending_action(app, prompt.action, Some(prompt.password));
+}
+
+fn execute_pending_action(app: &mut App, action: PendingAction, password: Option<String>) {
+    let (label, args) = match action {
         PendingAction::Update => ("Обновление системы".to_string(), vec!["update".to_string()]),
         PendingAction::Remove(package) => (
             format!("Удаление {package}"),
@@ -593,53 +666,13 @@ fn confirm_modal(app: &mut App) {
         PendingAction::Benchmark => ("Benchmark AUR".to_string(), vec!["benchmark".to_string()]),
     };
     app.notice = format!("{label}: выполняется backend");
-    if matches!(
-        args.first().map(String::as_str),
-        Some("update" | "remove" | "clean")
-    ) {
-        if let Err(error) = request_sudo_password() {
-            app.action_result = format!("[ FAIL ] {error}");
-            app.notice = format!("{label}: отменено");
-            return;
-        }
-    }
-    app.action_result = run_backend_action(
-        &args,
-        matches!(
-            args.first().map(String::as_str),
-            Some("update" | "remove" | "clean")
-        ),
-    );
+    app.action_result = run_backend_action(&args, password.is_some());
     app.db = load_db_stats();
     app.notice = if app.action_result.starts_with("[ OK ]") {
         format!("{label}: выполнено")
     } else {
         format!("{label}: завершено с ошибкой")
     };
-}
-
-fn request_sudo_password() -> Result<(), String> {
-    disable_raw_mode().map_err(|error| format!("не удалось подготовить ввод пароля: {error}"))?;
-    let mut stdout = io::stdout();
-    execute!(stdout, DisableMouseCapture, LeaveAlternateScreen)
-        .map_err(|error| format!("не удалось открыть запрос sudo: {error}"))?;
-
-    let result = Command::new("sudo")
-        .arg("-v")
-        .status()
-        .map_err(|error| format!("не удалось запустить sudo: {error}"));
-
-    let restore =
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture).and_then(|_| enable_raw_mode());
-    if let Err(error) = restore {
-        return Err(format!("не удалось вернуть TUI: {error}"));
-    }
-
-    match result {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!("sudo не подтвердил права (код {status})")),
-        Err(error) => Err(error),
-    }
 }
 
 fn run_backend_action(args: &[String], confirmed: bool) -> String {
@@ -861,6 +894,9 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
     if let Some(modal) = &app.modal {
         draw_modal(frame, area, modal);
     }
+    if let Some(prompt) = &app.password_prompt {
+        draw_password_prompt(frame, area, prompt);
+    }
 }
 
 fn centered(area: Rect, width_ratio: f32, height_ratio: f32) -> Rect {
@@ -1046,6 +1082,33 @@ fn draw_modal(frame: &mut ratatui::Frame, area: Rect, modal: &ConfirmModal) {
         ])
         .wrap(Wrap { trim: false })
         .block(panel(modal.title.as_str(), ORANGE)),
+        modal_area,
+    );
+}
+
+fn draw_password_prompt(frame: &mut ratatui::Frame, area: Rect, prompt: &PasswordPrompt) {
+    let modal_area = centered(area, 0.52, 0.30);
+    let masked = "*".repeat(prompt.password.chars().count());
+    frame.render_widget(Clear, modal_area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from("Для выполнения операции нужны права администратора."),
+            Line::from("Пароль не сохраняется и не отображается."),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Пароль: ", Style::default().fg(CYAN)),
+                Span::styled(masked, Style::default().fg(Color::White)),
+                Span::styled("█", Style::default().fg(CYAN)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Enter", Style::default().fg(GREEN)),
+                Span::styled(" подтвердить   ", Style::default().fg(MUTED)),
+                Span::styled("Esc", Style::default().fg(PINK)),
+                Span::styled(" отменить", Style::default().fg(MUTED)),
+            ]),
+        ])
+        .block(panel("ПАРОЛЬ SUDO", ORANGE)),
         modal_area,
     );
 }
