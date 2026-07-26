@@ -593,6 +593,16 @@ fn confirm_modal(app: &mut App) {
         PendingAction::Benchmark => ("Benchmark AUR".to_string(), vec!["benchmark".to_string()]),
     };
     app.notice = format!("{label}: выполняется backend");
+    if matches!(
+        args.first().map(String::as_str),
+        Some("update" | "remove" | "clean")
+    ) {
+        if let Err(error) = request_sudo_password() {
+            app.action_result = format!("[ FAIL ] {error}");
+            app.notice = format!("{label}: отменено");
+            return;
+        }
+    }
     app.action_result = run_backend_action(
         &args,
         matches!(
@@ -606,6 +616,30 @@ fn confirm_modal(app: &mut App) {
     } else {
         format!("{label}: завершено с ошибкой")
     };
+}
+
+fn request_sudo_password() -> Result<(), String> {
+    disable_raw_mode().map_err(|error| format!("не удалось подготовить ввод пароля: {error}"))?;
+    let mut stdout = io::stdout();
+    execute!(stdout, DisableMouseCapture, LeaveAlternateScreen)
+        .map_err(|error| format!("не удалось открыть запрос sudo: {error}"))?;
+
+    let result = Command::new("sudo")
+        .arg("-v")
+        .status()
+        .map_err(|error| format!("не удалось запустить sudo: {error}"));
+
+    let restore =
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture).and_then(|_| enable_raw_mode());
+    if let Err(error) = restore {
+        return Err(format!("не удалось вернуть TUI: {error}"));
+    }
+
+    match result {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("sudo не подтвердил права (код {status})")),
+        Err(error) => Err(error),
+    }
 }
 
 fn run_backend_action(args: &[String], confirmed: bool) -> String {
