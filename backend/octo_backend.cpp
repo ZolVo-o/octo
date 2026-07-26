@@ -49,6 +49,7 @@ std::vector<std::string> sudo_pacman(std::initializer_list<std::string> argument
     std::vector<std::string> command{"sudo"};
     if (tui_mode()) command.push_back("-n");
     command.push_back("pacman");
+    if (tui_mode()) command.push_back("--noconfirm");
     command.insert(command.end(), arguments.begin(), arguments.end());
     return command;
 }
