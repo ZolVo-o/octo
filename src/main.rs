@@ -26,6 +26,7 @@ use ratatui::{
     },
     Terminal,
 };
+use rusqlite::Connection;
 use serde::Deserialize;
 
 const CYAN: Color = Color::Rgb(0, 224, 255);
@@ -79,6 +80,11 @@ struct PasswordPrompt {
     password: String,
 }
 
+struct ActionResult {
+    label: String,
+    result: String,
+}
+
 struct ConfirmModal {
     title: String,
     message: String,
@@ -88,25 +94,15 @@ struct ConfirmModal {
 struct ProgressState {
     label: String,
     started: Instant,
-    duration: Duration,
+    stage_duration: Duration,
+    stage: usize,
+    frame: usize,
 }
 
-#[derive(Deserialize)]
-struct PackagesDb {
-    installed: Option<Vec<PackageRecord>>,
-    total: Option<usize>,
-}
-
-#[derive(Deserialize)]
 struct PackageRecord {
     name: String,
-    #[serde(default)]
     version: String,
-}
-
-#[derive(Deserialize)]
-struct HistoryDb {
-    history: Option<Vec<serde_json::Value>>,
+    source: String,
 }
 
 #[derive(Deserialize)]
@@ -144,7 +140,7 @@ enum Screen {
 impl Screen {
     fn title(self) -> &'static str {
         match self {
-            Self::Menu => "OCTO 5.0",
+            Self::Menu => "OCTO 0.5.0",
             Self::Packages => "СПИСОК ПАКЕТОВ OCTO",
             Self::Search => "ПОИСК В AUR (ТЕНТАКЛИ)",
             Self::Update => "ОБНОВЛЕНИЕ СИСТЕМЫ",
@@ -178,8 +174,10 @@ struct App {
     modal: Option<ConfirmModal>,
     password_prompt: Option<PasswordPrompt>,
     progress: Option<ProgressState>,
+    action_receiver: Option<Receiver<ActionResult>>,
     action_result: String,
     shell_history: Vec<String>,
+    shell_history_index: Option<usize>,
     shell_output: Vec<String>,
     shell_scroll: usize,
     running: bool,
@@ -199,10 +197,12 @@ impl Default for App {
             modal: None,
             password_prompt: None,
             progress: None,
+            action_receiver: None,
             action_result: "Действие ещё не запускалось".into(),
-            shell_history: Vec::new(),
+            shell_history: load_command_history(),
+            shell_history_index: None,
             shell_output: vec![
-                "🐙 OCTO CLI SHELL v5.0.0 (x86_64 Arch Linux)".into(),
+                "🐙 OCTO CLI SHELL v0.5.0 (x86_64 Arch Linux)".into(),
                 "Команды backend: install, search, info, diagnostic, cache-stats и другие.".into(),
                 "Введите 'help' для подсказки. Введите 'exit', чтобы вернуться в TUI.".into(),
             ],
@@ -221,31 +221,22 @@ fn octo_home() -> PathBuf {
 
 fn load_db_stats() -> DbStats {
     let root = octo_home();
-    let packages_path = root.join("db/packages.json");
-    let history_path = root.join("db/history.json");
+    let database_path = root.join("db/octo.sqlite3");
     let cache_path = root.join("cache");
-
-    let packages = fs::read_to_string(packages_path)
+    let (installed, history_count, connected) = Connection::open(database_path)
         .ok()
-        .and_then(|raw| serde_json::from_str::<PackagesDb>(&raw).ok());
-    let history = fs::read_to_string(history_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<HistoryDb>(&raw).ok());
-
-    let installed = packages
-        .as_ref()
-        .and_then(|db| db.installed.as_ref().map(Vec::len))
-        .unwrap_or(0);
-    let total = packages
-        .as_ref()
-        .and_then(|db| db.total)
-        .unwrap_or(installed);
-    let history_count = history
-        .as_ref()
-        .and_then(|db| db.history.as_ref().map(Vec::len))
-        .unwrap_or(0);
+        .and_then(|connection| {
+            let installed = connection
+                .query_row("SELECT COUNT(*) FROM packages", [], |row| row.get(0))
+                .ok()?;
+            let history = connection
+                .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+                .ok()?;
+            Some((installed, history, true))
+        })
+        .unwrap_or((0, 0, false));
     let cache_mb = dir_size_bytes(&cache_path) as f64 / 1_048_576.0;
-    let status = if packages.is_some() || history.is_some() {
+    let status = if connected {
         "DB: подключена"
     } else {
         "DB: нет данных"
@@ -253,7 +244,7 @@ fn load_db_stats() -> DbStats {
 
     DbStats {
         installed,
-        total,
+        total: installed,
         history: history_count,
         cache_mb,
         status: status.into(),
@@ -277,6 +268,46 @@ fn dir_size_bytes(path: &PathBuf) -> u64 {
         .sum()
 }
 
+fn load_packages() -> Vec<PackageRecord> {
+    let database_path = octo_home().join("db/octo.sqlite3");
+    let Ok(connection) = Connection::open(database_path) else {
+        return Vec::new();
+    };
+    let Ok(mut statement) = connection.prepare(
+        "SELECT name, version, COALESCE(source, 'official') FROM packages ORDER BY name COLLATE NOCASE",
+    )
+    else {
+        return Vec::new();
+    };
+    statement
+        .query_map([], |row| {
+            Ok(PackageRecord {
+                name: row.get(0)?,
+                version: row.get(1)?,
+                source: row.get(2)?,
+            })
+        })
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+fn load_command_history() -> Vec<String> {
+    let Ok(connection) = Connection::open(octo_home().join("db/octo.sqlite3")) else {
+        return Vec::new();
+    };
+    let Ok(mut statement) = connection.prepare(
+        "SELECT package_name FROM history WHERE action = 'command' ORDER BY id DESC LIMIT 100",
+    ) else {
+        return Vec::new();
+    };
+    let mut history: Vec<String> = statement
+        .query_map([], |row| row.get(0))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    history.reverse();
+    history
+}
+
 fn start_aur_search(app: &mut App) {
     let query = if app.input.trim().is_empty() {
         "neofetch".to_string()
@@ -286,6 +317,13 @@ fn start_aur_search(app: &mut App) {
     let (sender, receiver) = mpsc::channel();
     app.aur_loading = true;
     app.aur_receiver = Some(receiver);
+    app.progress = Some(ProgressState {
+        label: "Поиск в океане AUR".into(),
+        started: Instant::now(),
+        stage_duration: Duration::from_millis(850),
+        stage: 0,
+        frame: 0,
+    });
     app.notice = format!("Ищем в AUR: {query}");
     thread::spawn(move || {
         let result = fetch_aur_results(&query);
@@ -359,6 +397,9 @@ impl App {
             if let Ok(result) = receiver.try_recv() {
                 self.aur_loading = false;
                 self.aur_receiver = None;
+                if self.action_receiver.is_none() {
+                    self.progress = None;
+                }
                 match result {
                     Ok(results) if !results.is_empty() => {
                         self.notice = format!("AUR: найдено пакетов: {}", results.len());
@@ -369,14 +410,24 @@ impl App {
                 }
             }
         }
-        if self
-            .progress
-            .as_ref()
-            .is_some_and(|progress| progress.started.elapsed() >= progress.duration)
-        {
-            if let Some(progress) = self.progress.take() {
-                self.notice = format!("{} — готово", progress.label);
+        if let Some(receiver) = &self.action_receiver {
+            if let Ok(result) = receiver.try_recv() {
+                self.action_receiver = None;
+                self.action_result = result.result;
+                self.db = load_db_stats();
+                self.notice = if self.action_result.starts_with("[ OK ]") {
+                    format!("{}: выполнено", result.label)
+                } else {
+                    format!("{}: завершено с ошибкой", result.label)
+                };
+                self.progress = None;
             }
+        }
+        if let Some(progress) = &mut self.progress {
+            let elapsed = progress.started.elapsed();
+            progress.stage =
+                (elapsed.as_millis() / progress.stage_duration.as_millis().max(1)).min(3) as usize;
+            progress.frame = (elapsed.as_millis() / 180 % 4) as usize;
         }
     }
 }
@@ -497,6 +548,14 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             };
             app.shell_scroll = (current + visible).min(max_scroll);
         }
+        KeyCode::Up if app.screen == Screen::Shell && !app.shell_history.is_empty() => {
+            let next = app
+                .shell_history_index
+                .unwrap_or(app.shell_history.len())
+                .saturating_sub(1);
+            app.shell_history_index = Some(next);
+            app.input = app.shell_history[next].clone();
+        }
         KeyCode::Up if app.screen == Screen::Shell => {
             let visible = 8usize;
             let max_scroll = app.shell_output.len().saturating_sub(visible);
@@ -506,6 +565,19 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.shell_scroll.min(max_scroll)
             };
             app.shell_scroll = current.saturating_sub(1);
+        }
+        KeyCode::Down if app.screen == Screen::Shell && app.shell_history_index.is_some() => {
+            match app.shell_history_index {
+                Some(index) if index + 1 < app.shell_history.len() => {
+                    app.shell_history_index = Some(index + 1);
+                    app.input = app.shell_history[index + 1].clone();
+                }
+                Some(_) => {
+                    app.shell_history_index = None;
+                    app.input.clear();
+                }
+                None => {}
+            }
         }
         KeyCode::Down if app.screen == Screen::Shell => {
             let visible = 8usize;
@@ -523,6 +595,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::End if app.screen == Screen::Shell => {
             app.shell_scroll = usize::MAX;
         }
+        KeyCode::Tab if app.screen == Screen::Shell => complete_shell_input(app),
         KeyCode::Char(c)
             if matches!(app.screen, Screen::Search | Screen::Remove | Screen::Shell) =>
         {
@@ -605,6 +678,9 @@ fn shell_help() -> Vec<String> {
 }
 
 fn confirm_modal(app: &mut App) {
+    if app.action_receiver.is_some() {
+        return;
+    }
     let Some(modal) = app.modal.take() else {
         return;
     };
@@ -619,7 +695,7 @@ fn confirm_modal(app: &mut App) {
         });
         return;
     }
-    execute_pending_action(app, modal.action, None);
+    start_pending_action(app, modal.action, None);
 }
 
 fn submit_password(app: &mut App) {
@@ -631,28 +707,13 @@ fn submit_password(app: &mut App) {
         app.notice = "Операция отменена".into();
         return;
     }
-    let result = Command::new("sudo")
-        .args(["-S", "-v"])
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            if let Some(mut stdin) = child.stdin.take() {
-                use std::io::Write;
-                stdin.write_all(prompt.password.as_bytes())?;
-                stdin.write_all(b"\n")?;
-            }
-            child.wait_with_output()
-        });
-    if result.as_ref().is_err() || result.as_ref().is_ok_and(|output| !output.status.success()) {
-        app.action_result = "[ FAIL ] пароль sudo не принят".into();
-        app.notice = "Операция отменена".into();
-        return;
-    }
-    execute_pending_action(app, prompt.action, Some(prompt.password));
+    start_pending_action(app, prompt.action, Some(prompt.password));
 }
 
-fn execute_pending_action(app: &mut App, action: PendingAction, password: Option<String>) {
+fn start_pending_action(app: &mut App, action: PendingAction, password: Option<String>) {
+    if app.action_receiver.is_some() {
+        return;
+    }
     let (label, args) = match action {
         PendingAction::Update => ("Обновление системы".to_string(), vec!["update".to_string()]),
         PendingAction::Remove(package) => (
@@ -665,14 +726,70 @@ fn execute_pending_action(app: &mut App, action: PendingAction, password: Option
         ),
         PendingAction::Benchmark => ("Benchmark AUR".to_string(), vec!["benchmark".to_string()]),
     };
-    app.notice = format!("{label}: выполняется backend");
-    app.action_result = run_backend_action(&args, password.is_some());
-    app.db = load_db_stats();
-    app.notice = if app.action_result.starts_with("[ OK ]") {
-        format!("{label}: выполнено")
+    let (sender, receiver) = mpsc::channel();
+    let needs_sudo = password.is_some();
+    let progress_label = label.clone();
+    app.action_receiver = Some(receiver);
+    app.progress = Some(ProgressState {
+        label: progress_label.clone(),
+        started: Instant::now(),
+        stage_duration: Duration::from_secs(2),
+        stage: 0,
+        frame: 0,
+    });
+    app.action_result = if needs_sudo {
+        "[ … ] пароль принят, проверяется sudo…".into()
     } else {
-        format!("{label}: завершено с ошибкой")
+        "[ … ] запускается backend…".into()
     };
+    app.notice = if needs_sudo {
+        format!("{label}: проверка sudo и запуск backend…")
+    } else {
+        format!("{label}: запуск backend…")
+    };
+    thread::spawn(move || {
+        let result = if let Some(password) = password {
+            match validate_sudo_password(&password) {
+                Ok(()) => {
+                    drop(password);
+                    run_backend_action(&args, true)
+                }
+                Err(error) => error,
+            }
+        } else {
+            run_backend_action(&args, false)
+        };
+        let _ = sender.send(ActionResult { label, result });
+    });
+}
+
+fn validate_sudo_password(password: &str) -> Result<(), String> {
+    let result = Command::new("sudo")
+        .args(["-S", "-p", "", "-v"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                stdin.write_all(password.as_bytes())?;
+                stdin.write_all(b"\n")?;
+            }
+            child.wait_with_output()
+        });
+    match result {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if detail.is_empty() {
+                Err("[ FAIL ] пароль sudo не принят".into())
+            } else {
+                Err(format!("[ FAIL ] пароль sudo не принят: {detail}"))
+            }
+        }
+        Err(error) => Err(format!("[ FAIL ] не удалось проверить sudo: {error}")),
+    }
 }
 
 fn run_backend_action(args: &[String], confirmed: bool) -> String {
@@ -711,10 +828,12 @@ fn run_backend_action(args: &[String], confirmed: bool) -> String {
 fn execute_shell_command(app: &mut App) {
     let command_line = app.input.trim().to_string();
     app.input.clear();
+    app.shell_history_index = None;
     if command_line.is_empty() {
         return;
     }
     app.shell_history.push(command_line.clone());
+    record_command_history(&command_line);
     app.shell_output
         .push(format!("octo@arch :~$ {command_line}"));
 
@@ -764,6 +883,110 @@ fn execute_shell_command(app: &mut App) {
     }
 }
 
+fn record_command_history(command_line: &str) {
+    let Ok(connection) = Connection::open(octo_home().join("db/octo.sqlite3")) else {
+        return;
+    };
+    let _ = connection.execute(
+        "INSERT INTO history(action, package_name, version) VALUES('command', ?1, 'unknown')",
+        [command_line],
+    );
+}
+
+fn shell_commands() -> &'static [&'static str] {
+    &[
+        "help",
+        "install",
+        "remove",
+        "update",
+        "search",
+        "info",
+        "deps",
+        "dependencies",
+        "зависимости",
+        "list",
+        "stats",
+        "cache-stats",
+        "size",
+        "размер",
+        "popularity",
+        "популярность",
+        "clean",
+        "benchmark",
+        "diagnostic",
+        "monitor",
+        "backup",
+        "restore",
+        "security",
+        "army",
+        "logs",
+        "history",
+        "настройки",
+        "алиас",
+        "поймать",
+        "отпустить",
+        "щупальца",
+        "чернила",
+        "статистика",
+        "очистка",
+        "бэкап",
+        "восстановить",
+        "exit",
+    ]
+}
+
+fn complete_shell_input(app: &mut App) {
+    let prefix = app.input.clone();
+    if prefix.split_whitespace().count() <= 1 {
+        if let Some(command) = shell_commands()
+            .iter()
+            .find(|command| command.starts_with(prefix.as_str()))
+        {
+            app.input = (*command).to_string();
+        }
+        return;
+    }
+    let tokens: Vec<&str> = prefix.split_whitespace().collect();
+    if matches!(tokens.first().copied(), Some("restore" | "security")) && tokens.len() == 2 {
+        let argument = tokens[1];
+        let path = PathBuf::from(argument);
+        let directory = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let file_prefix = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        if let Ok(entries) = fs::read_dir(directory) {
+            if let Some(candidate) = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|candidate| {
+                    candidate
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(file_prefix))
+                })
+                .min_by(|left, right| left.to_string_lossy().cmp(&right.to_string_lossy()))
+            {
+                let candidate = candidate.to_string_lossy();
+                app.input = format!("{} {}", tokens[0], candidate);
+            }
+        }
+        return;
+    }
+    if !matches!(
+        tokens.first().copied(),
+        Some("remove" | "info" | "ink" | "чернила" | "отпустить")
+    ) {
+        return;
+    }
+    let package_prefix = tokens.last().copied().unwrap_or_default();
+    if let Some(package) = load_packages()
+        .into_iter()
+        .map(|package| package.name)
+        .find(|name| name.starts_with(package_prefix))
+    {
+        let command = tokens[..tokens.len() - 1].join(" ");
+        app.input = format!("{command} {package}");
+    }
+}
+
 fn normalize_shell_args(tokens: &[&str]) -> Result<Vec<String>, String> {
     let command = tokens.first().copied().unwrap_or_default();
     let args = &tokens[1..];
@@ -778,7 +1001,34 @@ fn normalize_shell_args(tokens: &[&str]) -> Result<Vec<String>, String> {
     }) {
         return Err("команда содержит запрещённые shell-символы".into());
     }
+    let command = match command {
+        "поймать" => "catch",
+        "установить" | "инсталл" => "install",
+        "отпустить" => "release",
+        "удалить" => "remove",
+        "щупальца" => "tentacle",
+        "чернила" | "инфо" => "ink",
+        "зависимости" | "dependencies" => "deps",
+        "армия" => "army",
+        "ракушка" => "shell",
+        "статистика" => "stats",
+        "очистка" => "clean",
+        "бэкап" => "backup",
+        "восстановить" => "restore",
+        "история" => "history",
+        "алиас" => "алиас",
+        "настройки" => "настройки",
+        "поиск" => "search",
+        "найти" => "search",
+        "обновить" => "update",
+        "помощь" => "help",
+        "журнал" => "logs",
+        "размер" => "size",
+        "популярность" => "popularity",
+        other => other,
+    };
     match command {
+        "help" => normalized.push("help".into()),
         "install" | "i" => {
             if args.iter().filter(|arg| !arg.starts_with('-')).count() != 1 {
                 return Err("укажите один пакет: install <pkg>".into());
@@ -815,19 +1065,46 @@ fn normalize_shell_args(tokens: &[&str]) -> Result<Vec<String>, String> {
             }
             normalized.push((*query).into());
         }
-        "list" | "ls" => normalized.push("list".into()),
+        "list" | "ls" | "shell" => normalized.push("list".into()),
         "stats" => normalized.push("stats".into()),
         "cache-stats" => normalized.push("cache-stats".into()),
+        "size" | "popularity" => {
+            if args.len() != 1 {
+                return Err(format!("укажите пакет: {command} <pkg>"));
+            }
+            normalized = vec![command.into(), args[0].into()];
+        }
         "benchmark" | "bench" => normalized.push("benchmark".into()),
         "diagnostic" | "diag" => normalized.push("diagnostic".into()),
         "monitor" => normalized.push("monitor".into()),
         "backup" => normalized.push("backup".into()),
         "army" => normalized.push("army".into()),
         "logs" => normalized.push("logs".into()),
+        "history" => {
+            if args.len() > 1 {
+                return Err("history не принимает аргументы; используйте clean history".into());
+            }
+            normalized.push("history".into());
+        }
+        "алиас" => {
+            if args.len() > 3 {
+                return Err("алиас: список | добавить <имя> <команда> | удалить <имя>".into());
+            }
+            normalized.push("алиас".into());
+            normalized.extend(args.iter().map(|arg| (*arg).into()));
+        }
+        "настройки" => {
+            if args.len() > 2 {
+                return Err("настройки: настройки тема океан|классическая".into());
+            }
+            normalized.push("настройки".into());
+            normalized.extend(args.iter().map(|arg| (*arg).into()));
+        }
         "market" => normalized.push("market".into()),
         "matrix" => normalized.push("matrix".into()),
         "pulse" => normalized.push("pulse".into()),
-        "info" | "ink" | "security" | "sandbox" | "catch" | "release" | "tentacle" | "predict" => {
+        "info" | "ink" | "deps" | "security" | "sandbox" | "catch" | "release" | "tentacle"
+        | "predict" => {
             if args.len() != 1 {
                 return Err(format!("укажите аргумент: {command} <value>"));
             }
@@ -851,8 +1128,8 @@ fn normalize_shell_args(tokens: &[&str]) -> Result<Vec<String>, String> {
                 .first()
                 .copied()
                 .ok_or("укажите область: clean cache|backups|all")?;
-            if !matches!(target, "cache" | "backups" | "all") {
-                return Err("доступно: cache, backups, all".into());
+            if !matches!(target, "cache" | "backups" | "history" | "all") {
+                return Err("доступно: cache, backups, history, all".into());
             }
             normalized = vec!["clean".into(), target.into()];
         }
@@ -1034,17 +1311,38 @@ fn panel<'a>(title: &'a str, color: Color) -> Block<'a> {
 
 fn draw_progress(frame: &mut ratatui::Frame, area: Rect, progress: &ProgressState) {
     let elapsed = progress.started.elapsed().as_secs_f64();
-    let total = progress.duration.as_secs_f64().max(0.1);
-    let ratio = (elapsed / total).clamp(0.0, 1.0);
+    let stage_total = progress.stage_duration.as_secs_f64().max(0.1);
+    let stage_ratio = (elapsed / stage_total).fract();
+    let ratio = ((progress.stage as f64 + stage_ratio) / 4.0).clamp(0.0, 0.99);
     let progress_area = Rect {
         x: area.x + area.width / 4,
         y: area.y + area.height.saturating_sub(4),
         width: area.width / 2,
-        height: 3,
+        height: 5,
     };
+    let stages = [
+        "🌊 Океан поиска…",
+        "🐙 Щупальца тянутся к источнику…",
+        "🦑 Проверка зависимостей…",
+        "🐙 Выполнение операции…",
+    ];
+    let octopus_count = ((ratio * 10.0) as usize).clamp(1, 10);
+    let moving_octopus = ["🐙", "🦑", "🐙", "🦑"][progress.frame];
+    let octopus_bar = format!(
+        "{}{}{}",
+        "🐙".repeat(octopus_count.saturating_sub(1)),
+        moving_octopus,
+        "·".repeat(10usize.saturating_sub(octopus_count))
+    );
+    let label = format!(
+        "{}  {}  {}%",
+        stages[progress.stage.min(stages.len() - 1)],
+        octopus_bar,
+        (ratio * 100.0) as u16
+    );
     frame.render_widget(
         Gauge::default()
-            .block(panel(progress.label.as_str(), ORANGE))
+            .block(panel(label.as_str(), ORANGE))
             .gauge_style(
                 Style::default()
                     .fg(ORANGE)
@@ -1052,7 +1350,7 @@ fn draw_progress(frame: &mut ratatui::Frame, area: Rect, progress: &ProgressStat
                     .add_modifier(Modifier::BOLD),
             )
             .ratio(ratio)
-            .label(format!("{}%", (ratio * 100.0) as u16)),
+            .label(format!("🐙 {}", progress.label)),
         progress_area,
     );
 }
@@ -1350,17 +1648,16 @@ fn draw_packages(frame: &mut ratatui::Frame, area: Rect, _app: &App) {
         .constraints([Constraint::Length(3), Constraint::Min(6)])
         .split(area);
     frame.render_widget(tabs, chunks[0]);
-    let packages_path = octo_home().join("db/packages.json");
-    let packages = fs::read_to_string(packages_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<PackagesDb>(&raw).ok())
-        .and_then(|db| db.installed)
-        .unwrap_or_default();
+    let packages = load_packages();
     let rows: Vec<Row> = packages
         .iter()
         .map(|package| {
             Row::new([
-                Cell::from("local"),
+                Cell::from(if package.source == "aur" {
+                    "AUR"
+                } else {
+                    "офиц."
+                }),
                 Cell::from(package.name.clone()),
                 Cell::from(if package.version.is_empty() {
                     "unknown".into()
@@ -1527,7 +1824,7 @@ fn draw_stats(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         chunks[2],
     );
     frame.render_widget(
-        Paragraph::new("Данные читаются из ~/.octo/db/packages.json и ~/.octo/db/history.json. Обновите backend, чтобы статистика стала точнее.").style(Style::default().fg(MUTED)),
+        Paragraph::new("Данные читаются из SQLite ~/.octo/db/octo.sqlite3. Обновите backend, чтобы статистика стала точнее.").style(Style::default().fg(MUTED)),
         chunks[3],
     );
 }
@@ -1661,12 +1958,22 @@ mod tests {
         assert_eq!(normalize_shell_args(&["ls"]).unwrap(), vec!["list"]);
         assert_eq!(normalize_shell_args(&["bench"]).unwrap(), vec!["benchmark"]);
         assert_eq!(
+            normalize_shell_args(&["статистика"]).unwrap(),
+            vec!["stats"]
+        );
+        assert_eq!(normalize_shell_args(&["ракушка"]).unwrap(), vec!["list"]);
+        assert_eq!(
             normalize_shell_args(&["diagnostic"]).unwrap(),
             vec!["diagnostic"]
         );
         assert_eq!(
             normalize_shell_args(&["cache-stats"]).unwrap(),
             vec!["cache-stats"]
+        );
+        assert_eq!(normalize_shell_args(&["размер", "ripgrep"]).unwrap(), vec!["size", "ripgrep"]);
+        assert_eq!(
+            normalize_shell_args(&["popularity", "ripgrep"]).unwrap(),
+            vec!["popularity", "ripgrep"]
         );
     }
 
@@ -1675,6 +1982,14 @@ mod tests {
         assert_eq!(
             normalize_shell_args(&["info", "ripgrep"]).unwrap(),
             vec!["info", "ripgrep"]
+        );
+        assert_eq!(
+            normalize_shell_args(&["зависимости", "demo"]).unwrap(),
+            vec!["deps", "demo"]
+        );
+        assert_eq!(
+            normalize_shell_args(&["установить", "google-chrome", "--aur"]).unwrap(),
+            vec!["install", "--aur", "google-chrome"]
         );
         assert_eq!(
             normalize_shell_args(&["profile", "install", "ripgrep"]).unwrap(),
@@ -1699,5 +2014,10 @@ mod tests {
     fn rejects_unknown_commands_and_shell_syntax() {
         assert!(normalize_shell_args(&["echo", "hello"]).is_err());
         assert!(normalize_shell_args(&["install", "pkg;", "rm", "-rf", "/"]).is_err());
+        assert!(normalize_shell_args(&["size"]).is_err());
+        assert_eq!(
+            normalize_shell_args(&["clean", "history"]).unwrap(),
+            vec!["clean", "history"]
+        );
     }
 }

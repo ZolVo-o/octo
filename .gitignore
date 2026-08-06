@@ -20,3 +20,6 @@
 .env
 .env.*
 !.env.example
+
+# Working prompt and private planning documents
+/docs/

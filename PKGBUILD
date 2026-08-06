@@ -2,12 +2,12 @@
 pkgname=octo-git
 pkgver=r1
 pkgrel=1
-pkgdesc='Arch Linux package manager with a Rust TUI and C++ backend'
+pkgdesc='Arch Linux package manager with a C++ backend'
 arch=('x86_64')
 url='https://github.com/ZolVo-o/octo'
 license=('MIT')
-depends=('curl' 'git' 'pacman')
-makedepends=('gcc' 'rust')
+depends=('curl' 'git' 'pacman' 'sqlite')
+makedepends=('gcc')
 provides=('octo')
 conflicts=('octo')
 source=('git+https://github.com/ZolVo-o/octo.git')
@@ -21,20 +21,17 @@ pkgver() {
 build() {
     cd "$srcdir/octo"
     mkdir -p target
-    g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -o target/octo-backend
-    cargo build --release --locked --bin octo-tui
+    g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -lsqlite3 -pthread -o target/octo-backend
 }
 
 check() {
     cd "$srcdir/octo"
-    cargo test --locked
 }
 
 package() {
     cd "$srcdir/octo"
     install -Dm755 octo "$pkgdir/usr/bin/octo"
     install -Dm755 target/octo-backend "$pkgdir/usr/lib/octo/octo-backend"
-    install -Dm755 target/release/octo-tui "$pkgdir/usr/lib/octo/octo-tui"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

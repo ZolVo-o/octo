@@ -12,22 +12,14 @@ fi
 BACKEND="${OCTO_BACKEND_BIN:-${DEFAULT_BACKEND}}"
 
 if [[ "${1:-}" == "tui" || "${1:-}" == "ui" ]]; then
-    shift
-    if [[ -x "${OCTO_SRC}/target/debug/octo-tui" ]]; then
-        OCTO_BACKEND="$BACKEND" exec "${OCTO_SRC}/target/debug/octo-tui" "$@"
-    elif [[ -x /usr/lib/octo/octo-tui ]]; then
-        OCTO_BACKEND="$BACKEND" exec /usr/lib/octo/octo-tui "$@"
-    elif command -v cargo >/dev/null 2>&1 && [[ -f "${OCTO_SRC}/Cargo.toml" ]]; then
-        OCTO_BACKEND="$BACKEND" exec cargo run --quiet --manifest-path "${OCTO_SRC}/Cargo.toml" --bin octo-tui -- "$@"
-    else
-        echo "🐙 Rust TUI не собран. Установите Rust и выполните: cargo build" >&2
-        exit 1
-    fi
+    echo "🐙 TUI временно отключён: OCTO сейчас работает в режиме пакетного менеджера." >&2
+    echo "   Используйте: octo help" >&2
+    exit 2
 fi
 
 if [[ ! -x "$BACKEND" ]]; then
     echo "🐙 C++ backend не собран. Запустите ./install.sh или выполните:" >&2
-    echo "   g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -o target/octo-backend" >&2
+    echo "   g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -lsqlite3 -pthread -o target/octo-backend" >&2
     exit 1
 fi
 

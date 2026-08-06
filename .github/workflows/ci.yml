@@ -5,30 +5,15 @@ on:
   pull_request:
 
 jobs:
-  rust-and-bash:
+  backend-and-bash:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-        with:
-          components: rustfmt
-
-      - name: Check formatting
-        run: cargo fmt -- --check
-
-      - name: Cargo check
-        run: cargo check
-
-      - name: Run tests
-        run: cargo test
-
-      - name: Build TUI
-        run: cargo build --bin octo-tui
+      - name: Build C++ backend
+        run: g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -lsqlite3 -pthread -o /tmp/octo-backend
 
       - name: Bash syntax check
-        run: bash -n octo install.sh lib/*.sh
+        run: bash -n octo install.sh

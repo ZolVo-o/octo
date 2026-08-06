@@ -37,7 +37,7 @@ Linux. Проект объединяет C++ backend с полноэкранны
 - тема OCTO Ocean Blue: navy-фон, cyan-контуры, зелёные, оранжевые и розовые статусы;
 - современный dashboard с карточками состояния, приветствием и контекстной панелью;
 - понятные пользовательские подсказки для каждого выбранного действия;
-- чтение статистики из `~/.octo/db/packages.json` и `~/.octo/db/history.json`;
+- единая SQLite-база `~/.octo/db/octo.sqlite3` для пакетов, истории и статистики;
 - асинхронный поиск AUR в отдельном потоке без заморозки TUI;
 - модальные окна подтверждения для потенциально опасных действий;
 - progress bars для статистики, кэша и выполняемых действий;
@@ -129,6 +129,7 @@ cargo --version
 Основные зависимости:
 
 - `g++` с поддержкой C++17;
+- SQLite3: библиотека и заголовок `sqlite3.h`;
 - `curl`;
 - `git`;
 - `gpg`;
@@ -167,8 +168,10 @@ makepkg -si
 
 ```bash
 octo help
-octo tui
 ```
+
+Команда `octo tui` временно отключена. Сейчас проект развивает только CLI и
+C++ backend пакетного менеджера; код TUI сохранён для последующего возвращения.
 
 Для публикации в AUR файл `PKGBUILD` нужно положить в отдельный AUR-клон
 `octo-git`, сгенерировать `.SRCINFO` командой `makepkg --printsrcinfo > .SRCINFO`
@@ -186,37 +189,18 @@ cd /path/to/octo
 chmod +x ./octo
 ```
 
-Или используйте установщик, который создаёт ссылку в `~/.local/bin`, собирает
-C++ backend и затем Rust TUI при наличии Cargo:
+Или используйте установщик, который создаёт ссылку в `~/.local/bin` и собирает
+только C++ backend:
 
 ```bash
 chmod +x ./install.sh
 ./install.sh
 ```
 
-Соберите Rust TUI:
+## Rust TUI (временно отключён)
 
-```bash
-cargo build --bin octo-tui
-```
-
-Запустите интерфейс:
-
-```bash
-./octo tui
-```
-
-Команда `./octo tui` использует уже собранный `target/debug/octo-tui`. Если
-бинарника нет, но установлен Cargo, launcher попробует выполнить `cargo run`.
-
-Для production-сборки:
-
-```bash
-cargo build --release --bin octo-tui
-./target/release/octo-tui
-```
-
-## Rust TUI
+Исходники TUI сохраняются в репозитории, но launcher и пакетная сборка временно
+не запускают и не устанавливают TUI. Текущий рабочий интерфейс — CLI backend.
 
 ### Главное меню
 
@@ -280,6 +264,12 @@ search --aur <query>
 find <query>
 info <package>
 ink <package>
+deps <aur-package>
+зависимости <aur-пакет>
+size <package>
+размер <package>
+popularity <package>
+популярность <package>
 
 update
 upgrade
@@ -308,6 +298,7 @@ matrix
 pulse
 clean cache
 clean backups
+clean history
 clean all
 help
 clear
@@ -333,6 +324,7 @@ clean cache
 - прокрутка колёсиком мыши в терминалах, которые передают mouse events;
 - `clear` для очистки вывода;
 - `Ctrl+L` для очистки вывода;
+- `Tab` для команд, пакетов и путей в `restore`/`security`;
 - `exit` или `quit` для возврата в TUI.
 
 ### Ограничения CLI SHELL
@@ -353,6 +345,9 @@ Launcher можно использовать напрямую:
 ./octo search <query>
 ./octo search --aur <query>
 ./octo info <package>
+./octo deps <aur-package>
+./octo size <package>
+./octo popularity <package>
 ./octo list
 ./octo benchmark
 ./octo diagnostic
@@ -363,6 +358,7 @@ Launcher можно использовать напрямую:
 ./octo restore <backup>
 ./octo clean cache
 ./octo clean backups
+./octo clean history
 ./octo clean all
 ./octo help
 ./octo version
@@ -405,7 +401,7 @@ etc/config.json
 ```json
 {
   "octo": {
-    "version": "5.0.0",
+    "version": "0.5.0",
     "color_scheme": "ocean",
     "auto_backup": true,
     "build_threads": 4,
@@ -434,8 +430,7 @@ etc/config.json
 ```text
 $HOME/.octo/
 ├── db/
-│   ├── packages.json
-│   └── history.json
+│   └── octo.sqlite3
 ├── pkgs/
 ├── cache/
 ├── logs/
@@ -455,23 +450,13 @@ TCP-соединения, TLS, ожидания первого байта и п�
 
 ### Путь к backend
 
-Если TUI запускается из другого каталога, задайте путь явно:
+Если launcher запускается из другого каталога, задайте путь явно:
 
 ```bash
-OCTO_BACKEND_BIN=/absolute/path/to/target/octo-backend ./octo tui
+OCTO_BACKEND_BIN=/absolute/path/to/target/octo-backend ./octo stats
 ```
 
 ## Безопасность
-
-### Что делает Rust TUI
-
-- запускает backend только через `Command` с отдельными аргументами;
-- не использует `sh -c`, `bash -c` или `eval` для пользовательского ввода;
-- принимает только команды из whitelist;
-- отклоняет неизвестные команды;
-- отклоняет лишние аргументы;
-- отклоняет shell-метасимволы `;`, `|`, `&`, `` ` ``, `$`, `>`, `<`, скобки и переводы строк;
-- показывает stdout, stderr и код завершения backend.
 
 ### Что всё ещё требует осторожности
 
@@ -486,17 +471,10 @@ C++ backend выполняет системные операции и может
 
 ## Разработка
 
-### Запуск TUI в debug-режиме
-
-```bash
-cargo run --bin octo-tui
-```
-
 ### Сборка
 
 ```bash
-cargo build
-cargo build --release
+./install.sh
 ```
 
 ### Форматирование
@@ -531,7 +509,7 @@ cargo test
 
 ```bash
 bash -n octo
-g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -o target/octo-backend
+    g++ -std=c++17 -O2 -Wall -Wextra backend/octo_backend.cpp -lsqlite3 -pthread -o target/octo-backend
 makepkg --printsrcinfo > .SRCINFO
 namcap PKGBUILD
 ```
@@ -564,17 +542,13 @@ rustc --version
 cargo --version
 ```
 
-### `./octo tui` не находит TUI или backend
+### Backend не найден
 
 Укажите абсолютный путь:
 
 ```bash
 OCTO_BACKEND_BIN="$(pwd)/target/octo-backend" ./octo stats
 ```
-
-### Интерфейс выглядит тесно или таблица обрезается
-
-Увеличьте размер терминала. Рекомендуется минимум 100 колонок и 30 строк.
 
 ### Backend сообщает об отсутствующей зависимости
 
@@ -593,14 +567,17 @@ OCTO_BACKEND_BIN="$(pwd)/target/octo-backend" ./octo stats
 
 ## Версия и релиз
 
-Текущая версия проекта: **5.0.0**.
+Текущая версия проекта: **0.5.0**.
 
-Релиз `v5.0.0` включает:
+Релиз `v0.5.0` включает:
 
 - единый C++17 backend вместо старых Bash-модулей в `lib/`;
 - сохранённый Rust TUI;
 - реальные действия TUI для benchmark, update, remove и clean через backend;
-- пакеты и статистика TUI читаются из текущей локальной базы OCTO;
+- пакеты и статистика читаются из SQLite-базы `~/.octo/db/octo.sqlite3`;
+- список пакетов показывает источник `[офиц.]` или `[AUR]` и синхронизирует версии;
+- команды `size`, `popularity`, `history` и `clean history`;
+- история команд в `~/.octo/history` и Tab-дополнение команд, пакетов и путей;
 - AUR VCS-пакет `octo-git`;
 - AUR-кэш с TTL 300 секунд;
 - сетевое сжатие, таймауты и повторные попытки;
@@ -612,15 +589,15 @@ OCTO_BACKEND_BIN="$(pwd)/target/octo-backend" ./octo stats
 `profile` пока запускает общий мониторинг системы, а не профилирование отдельной
 операции.
 
-## Планы
+## Ограничения текущего релиза
 
-- расширить чтение `~/.octo/db` до полноценного списка пакетов в таблицах;
-- добавить выбор пакетов стрелками внутри таблиц;
-- подключить progress bars к реальному stdout backend-команд;
-- добавить сохранение настроек темы;
-- сделать отдельный release-бинарник;
-- добавить интеграционные тесты backend-команд;
-- улучшить адаптацию интерфейса под узкие терминалы.
+- `market`, `matrix`, `pulse` и `predict` остаются демонстрационными режимами;
+- `profile` показывает общий мониторинг, а не профилирование отдельной операции;
+- `update` и `army` выполняют `pacman -Syu` после подтверждения, а не только
+  показывают список доступных обновлений;
+- AUR-метаданные разбираются без внешнего JSON-парсера, поэтому нестандартные
+  или экранированные поля могут быть отображены неполно;
+- TUI сохранён в исходниках, но launcher сейчас работает только через CLI backend.
 
 ## Вклад в проект
 

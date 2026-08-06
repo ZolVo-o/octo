@@ -25,15 +25,10 @@ fi
 mkdir -p "${PROJECT_DIR}/target"
 g++ -std=c++17 -O2 -Wall -Wextra \
     "${PROJECT_DIR}/backend/octo_backend.cpp" \
+    -lsqlite3 \
+    -pthread \
     -o "${PROJECT_DIR}/target/octo-backend"
-
-if command -v cargo >/dev/null 2>&1; then
-    echo "Собираю Rust TUI..."
-    cargo build --manifest-path "${PROJECT_DIR}/Cargo.toml" --bin octo-tui
-else
-    echo "Cargo не найден: C++ backend установлен, Rust TUI можно собрать позже."
-fi
 
 echo "Готово: ${TARGET}"
 echo "Запуск CLI: octo help"
-echo "Запуск TUI: octo tui"
+echo "TUI временно отключён"

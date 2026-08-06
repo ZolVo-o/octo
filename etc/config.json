@@ -1,6 +1,6 @@
 {
     "octo": {
-        "version": "5.0.0",
+        "version": "0.5.0",
         "color_scheme": "ocean",
         "auto_backup": true,
         "build_threads": 4,
