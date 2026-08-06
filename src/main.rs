@@ -897,10 +897,15 @@ fn shell_commands() -> &'static [&'static str] {
     &[
         "help",
         "install",
+        "установить",
         "remove",
+        "удалить",
         "update",
+        "обновить",
         "search",
+        "поиск",
         "info",
+        "инфо",
         "deps",
         "dependencies",
         "зависимости",
@@ -912,20 +917,31 @@ fn shell_commands() -> &'static [&'static str] {
         "popularity",
         "популярность",
         "clean",
+        "очистить",
         "benchmark",
         "diagnostic",
         "monitor",
         "backup",
+        "бэкап",
         "restore",
+        "восстановить",
         "security",
+        "безопасность",
         "army",
         "logs",
         "history",
+        "version",
+        "версия",
+        "alias",
+        "config",
         "настройки",
         "алиас",
         "поймать",
+        "catch",
         "отпустить",
+        "release",
         "щупальца",
+        "tentacle",
         "чернила",
         "статистика",
         "очистка",
@@ -951,7 +967,10 @@ fn complete_shell_input(app: &mut App) {
         let argument = tokens[1];
         let path = PathBuf::from(argument);
         let directory = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let file_prefix = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let file_prefix = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
         if let Ok(entries) = fs::read_dir(directory) {
             if let Some(candidate) = entries
                 .filter_map(Result::ok)
@@ -972,7 +991,18 @@ fn complete_shell_input(app: &mut App) {
     }
     if !matches!(
         tokens.first().copied(),
-        Some("remove" | "info" | "ink" | "чернила" | "отпустить")
+        Some(
+            "remove"
+                | "info"
+                | "ink"
+                | "deps"
+                | "dependencies"
+                | "зависимости"
+                | "security"
+                | "restore"
+                | "чернила"
+                | "отпустить",
+        )
     ) {
         return;
     }
@@ -1013,16 +1043,26 @@ fn normalize_shell_args(tokens: &[&str]) -> Result<Vec<String>, String> {
         "ракушка" => "shell",
         "статистика" => "stats",
         "очистка" => "clean",
+        "очистить" => "clean",
         "бэкап" => "backup",
         "восстановить" => "restore",
         "история" => "history",
         "алиас" => "алиас",
         "настройки" => "настройки",
+        "alias" => "алиас",
+        "config" => "настройки",
         "поиск" => "search",
         "найти" => "search",
         "обновить" => "update",
         "помощь" => "help",
         "журнал" => "logs",
+        "список" => "list",
+        "кэш" => "cache-stats",
+        "диагностика" => "diagnostic",
+        "монитор" => "monitor",
+        "тест" => "benchmark",
+        "безопасность" => "security",
+        "версия" => "version",
         "размер" => "size",
         "популярность" => "popularity",
         other => other,
@@ -1077,6 +1117,7 @@ fn normalize_shell_args(tokens: &[&str]) -> Result<Vec<String>, String> {
         "benchmark" | "bench" => normalized.push("benchmark".into()),
         "diagnostic" | "diag" => normalized.push("diagnostic".into()),
         "monitor" => normalized.push("monitor".into()),
+        "version" | "-v" => normalized.push("version".into()),
         "backup" => normalized.push("backup".into()),
         "army" => normalized.push("army".into()),
         "logs" => normalized.push("logs".into()),
@@ -1100,11 +1141,7 @@ fn normalize_shell_args(tokens: &[&str]) -> Result<Vec<String>, String> {
             normalized.push("настройки".into());
             normalized.extend(args.iter().map(|arg| (*arg).into()));
         }
-        "market" => normalized.push("market".into()),
-        "matrix" => normalized.push("matrix".into()),
-        "pulse" => normalized.push("pulse".into()),
-        "info" | "ink" | "deps" | "security" | "sandbox" | "catch" | "release" | "tentacle"
-        | "predict" => {
+        "info" | "ink" | "deps" | "security" | "catch" | "release" | "tentacle" => {
             if args.len() != 1 {
                 return Err(format!("укажите аргумент: {command} <value>"));
             }
@@ -1117,20 +1154,23 @@ fn normalize_shell_args(tokens: &[&str]) -> Result<Vec<String>, String> {
             }
             normalized = vec!["restore".into(), args[0].into()];
         }
-        "profile" => {
-            if args.len() != 2 {
-                return Err("укажите операцию и пакет: profile <operation> <pkg>".into());
-            }
-            normalized = vec!["profile".into(), args[0].into(), args[1].into()];
-        }
         "clean" => {
             let target = args
                 .first()
                 .copied()
                 .ok_or("укажите область: clean cache|backups|all")?;
-            if !matches!(target, "cache" | "backups" | "history" | "all") {
-                return Err("доступно: cache, backups, history, all".into());
-            }
+            let target = match target {
+                "кэш" => "cache",
+                "бэкапы" => "backups",
+                "историю" | "история" => "history",
+                "всё" => "all",
+                value if matches!(value, "cache" | "backups" | "history" | "all") => value,
+                _ => {
+                    return Err(
+                        "доступно: cache|кэш, backups|бэкапы, history|историю, all|всё".into(),
+                    )
+                }
+            };
             normalized = vec!["clean".into(), target.into()];
         }
         _ => return Err("неизвестная команда. Введите help".into()),
@@ -1970,7 +2010,10 @@ mod tests {
             normalize_shell_args(&["cache-stats"]).unwrap(),
             vec!["cache-stats"]
         );
-        assert_eq!(normalize_shell_args(&["размер", "ripgrep"]).unwrap(), vec!["size", "ripgrep"]);
+        assert_eq!(
+            normalize_shell_args(&["размер", "ripgrep"]).unwrap(),
+            vec!["size", "ripgrep"]
+        );
         assert_eq!(
             normalize_shell_args(&["popularity", "ripgrep"]).unwrap(),
             vec!["popularity", "ripgrep"]
@@ -1992,9 +2035,14 @@ mod tests {
             vec!["install", "--aur", "google-chrome"]
         );
         assert_eq!(
-            normalize_shell_args(&["profile", "install", "ripgrep"]).unwrap(),
-            vec!["profile", "install", "ripgrep"]
+            normalize_shell_args(&["config"]).unwrap(),
+            vec!["настройки"]
         );
+        assert_eq!(normalize_shell_args(&["version"]).unwrap(), vec!["version"]);
+        assert_eq!(normalize_shell_args(&["версия"]).unwrap(), vec!["version"]);
+        assert_eq!(normalize_shell_args(&["список"]).unwrap(), vec!["list"]);
+        assert_eq!(normalize_shell_args(&["кэш"]).unwrap(), vec!["cache-stats"]);
+        assert_eq!(normalize_shell_args(&["тест"]).unwrap(), vec!["benchmark"]);
     }
 
     #[test]

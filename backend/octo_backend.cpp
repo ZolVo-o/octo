@@ -842,25 +842,34 @@ int stats() {
 void help() {
     std::cout << CYAN << "🐙 OCTO C++ backend 0.5.0" << RESET << R"(
 
-  install|-S <pkg> [--aur]   установить пакет
-  remove|-R <pkg> [-d]        удалить пакет
-  update|-Syu                 обновить систему
-  search|-Ss <query>          поиск в репозиториях и AUR
-  info|-Si <pkg>              информация о пакете
-  size <pkg>                  установленный размер пакета
-  popularity <pkg>            популярность пакета в AUR
-  deps|зависимости <pkg>      зависимости и конфликты PKGBUILD
-  list|-Q, shell              список пакетов
-  catch, release, tentacle    AUR-совместимые команды
-  army                        обновить установленные пакеты
-  stats, cache-stats          статистика
-  clean cache|backups|history|all очистка
-  benchmark, profile          производительность
-  monitor, diagnostic, market диагностика и мониторинг
-  security <PKGBUILD>         проверка безопасности
-  backup, restore <file>      бэкап и восстановление
-  matrix, pulse, interactive  демонстрационные текстовые режимы
-  version|-v                  версия backend
+  установить|install <пакет> [--aur]  установить пакет
+  удалить|remove <пакет> [-d]          удалить пакет
+  обновить|update                      обновить систему
+  поиск|search <запрос> [--aur]       поиск в репозиториях и AUR
+  инфо|info <пакет>                    информация о пакете
+  размер|size <пакет>                  установленный размер
+  популярность|popularity <пакет>     популярность пакета в AUR
+  зависимости|deps <пакет>            зависимости и конфликты
+  список|list                          список установленных пакетов
+  поймать|catch <пакет>                установить пакет из AUR
+  отпустить|release <пакет>            удалить пакет
+  щупальца|tentacle <запрос>           поиск в AUR
+  армия|army                           обновить систему
+  статистика|stats                     статистика OCTO
+  кэш|cache-stats                      статистика кэша
+  очистить|clean <кэш|бэкапы|историю|всё> очистка данных
+  журнал|logs                          журнал ошибок
+  история|history                      история команд
+  диагностика|diagnostic               проверка окружения
+  монитор|monitor                      мониторинг системы
+  тест|benchmark                       проверка скорости AUR
+  безопасность|security <PKGBUILD>    проверка безопасности
+  бэкап|backup                         создать бэкап
+  восстановить|restore <файл>          восстановить из бэкапа
+  настройки|config                     настройки OCTO
+  алиас|alias                          пользовательские алиасы
+  версия|version                       версия OCTO
+  помощь|help                          показать эту справку
 )";
 }
 
@@ -876,7 +885,11 @@ int dispatch(const std::vector<std::string> &a) {
         {"статистика", "stats"}, {"очистка", "clean"}, {"бэкап", "backup"},
         {"восстановить", "restore"}, {"инфо", "info"}, {"поиск", "search"}, {"найти", "search"},
         {"обновить", "update"}, {"помощь", "help"}, {"журнал", "logs"},
-        {"размер", "size"}, {"популярность", "popularity"}
+        {"размер", "size"}, {"популярность", "popularity"}, {"зависимости", "deps"},
+        {"список", "list"}, {"кэш", "cache-stats"}, {"история", "history"},
+        {"диагностика", "diagnostic"}, {"монитор", "monitor"}, {"тест", "benchmark"},
+        {"безопасность", "security"}, {"настройки", "config"}, {"алиас", "alias"},
+        {"версия", "version"}, {"очистить", "clean"}
     };
     if (const auto it = aliases.find(args[0]); it != aliases.end()) args[0] = it->second;
     if (const auto custom = get_config("alias." + args[0]); !custom.empty()) args[0] = custom;
@@ -941,7 +954,10 @@ int dispatch(const std::vector<std::string> &a) {
     if (args[0] == "stats") return stats();
     if (args[0] == "cache-stats") return std::cout << "📦 Кэш: " << files(cache()) << " файлов\n", 0;
     if (args[0] == "clean") {
-        if (args.size() == 2 && (args[1] == "history" || args[1] == "история")) return clear_command_history();
+        if (args.size() == 2 && (args[1] == "history" || args[1] == "история" || args[1] == "историю"))
+            return clear_command_history();
+        if (args.size() == 2 && (args[1] == "кэш" || args[1] == "бэкапы" || args[1] == "всё"))
+            args[1] = args[1] == "кэш" ? "cache" : args[1] == "бэкапы" ? "backups" : "all";
         return args.size() > 1 ? clean(args[1]) : 2;
     }
     if (args[0] == "backup") return backup();
@@ -952,10 +968,6 @@ int dispatch(const std::vector<std::string> &a) {
         return restore_backup(backup_file);
     }
     if (args[0] == "security") return args.size() > 1 ? security_command(args[1]) : 2;
-    if (args[0] == "sandbox") {
-        std::cout << YELLOW << "sandbox: сборка выполняется в отдельном временном каталоге" << RESET << '\n';
-        return args.size() > 1 ? install_package(args[1], true) : 2;
-    }
     if (args[0] == "diagnostic" || args[0] == "diag") return diagnostic();
     if (args[0] == "monitor") return monitor();
     if (args[0] == "benchmark") {
@@ -972,15 +984,6 @@ int dispatch(const std::vector<std::string> &a) {
             std::cout << "AUR API: недоступен (wall " << ms << "ms)\n";
         }
         return result.code;
-    }
-    if (args[0] == "profile") {
-        std::cout << YELLOW << "profile: пока доступен только общий мониторинг системы" << RESET << '\n';
-        return monitor();
-    }
-    if (args[0] == "predict") {
-        std::cout << YELLOW << "predict: экспериментальная оценка, не измерение времени установки" << RESET << '\n'
-                  << "Прогноз: 30–60 секунд для " << (args.size() > 1 ? args[1] : "пакета") << '\n';
-        return 0;
     }
     if (args[0] == "logs") {
         const auto error_log = logs() / "errors.log";
@@ -1008,10 +1011,6 @@ int dispatch(const std::vector<std::string> &a) {
         sqlite3_close(database);
         return 0;
     }
-    if (args[0] == "market") return std::cout << YELLOW << "market: демонстрационный режим, источник данных ещё не подключён" << RESET << '\n', 0;
-    if (args[0] == "matrix") return std::cout << YELLOW << "matrix: демонстрационный режим" << RESET << "\n🐙 🦑 🐚 🐙 🦑\n", 0;
-    if (args[0] == "pulse") return std::cout << YELLOW << "pulse: демонстрационный режим" << RESET << "\n🐙 OCTO работает...\n", 0;
-    if (args[0] == "interactive") return help(), 0;
     if (args[0] == "army") {
         if (backup() != 0) {
             log_error("automatic backup failed before army update");

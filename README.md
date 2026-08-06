@@ -250,19 +250,25 @@ octo@arch :~$
 
 ### Поддержанные команды
 
+Все публичные команды имеют английское и русское имя. Короткие ключи pacman
+остаются внутренними совместимыми алиасами и в справке не показываются.
+
 ```text
 install <package>
+установить <пакет>
 install <package> --aur
-i <package>
 
 remove <package>
+удалить <пакет>
 uninstall <package>
 r <package>
 
 search <query>
+поиск <запрос>
 search --aur <query>
 find <query>
 info <package>
+инфо <пакет>
 ink <package>
 deps <aur-package>
 зависимости <aur-пакет>
@@ -272,8 +278,10 @@ popularity <package>
 популярность <package>
 
 update
+обновить
 upgrade
 list
+список
 ls
 stats
 cache-stats
@@ -288,18 +296,12 @@ security <file>
 catch <package>
 release <package>
 tentacle <query>
-sandbox <package>
-army
-profile <operation> <package>
-predict <package>
 logs
-market
-matrix
-pulse
 clean cache
 clean backups
 clean history
 clean all
+очистить кэш|бэкапы|историю|всё
 help
 clear
 exit
@@ -362,6 +364,16 @@ Launcher можно использовать напрямую:
 ./octo clean all
 ./octo help
 ./octo version
+./octo установить <пакет>
+./octo удалить <пакет>
+./octo обновить
+./octo поиск <запрос>
+./octo инфо <пакет>
+./octo список
+./octo статистика
+./octo диагностика
+./octo монитор
+./octo версия
 ```
 
 Дополнительные OCTO-команды:
@@ -372,14 +384,8 @@ Launcher можно использовать напрямую:
 ./octo tentacle <query>
 ./octo ink <package>
 ./octo army
-./octo sandbox <package>
-./octo profile <operation> <package>
-./octo predict <package>
 ./octo logs
 ./octo cache-stats
-./octo market
-./octo matrix
-./octo pulse
 ```
 
 Полный список команд всегда доступен через:
