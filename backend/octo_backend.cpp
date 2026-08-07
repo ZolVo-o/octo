@@ -59,13 +59,33 @@ bool tui_mode() {
     return value && std::string(value) == "1";
 }
 
-std::vector<std::string> sudo_pacman(std::initializer_list<std::string> arguments) {
-    std::vector<std::string> command{"sudo"};
-    if (tui_mode()) command.push_back("-n");
+std::vector<std::string> sudo_pacman(const std::vector<std::string> &arguments) {
+    std::vector<std::string> command{"sudo", "-n"};
     command.push_back("pacman");
-    if (tui_mode()) command.push_back("--noconfirm");
+    command.push_back("--noconfirm");
     command.insert(command.end(), arguments.begin(), arguments.end());
     return command;
+}
+
+std::vector<std::string> sudo_pacman(std::initializer_list<std::string> arguments) {
+    return sudo_pacman(std::vector<std::string>(arguments));
+}
+
+Result exec(const std::vector<std::string> &args, bool capture = false,
+            const fs::path &directory = {});
+
+bool authenticate_sudo() {
+    if (tui_mode()) return true;
+    if (!isatty(STDIN_FILENO) || !isatty(STDERR_FILENO)) {
+        std::cerr << RED << "❌ Нужен интерактивный терминал для ввода пароля sudo" << RESET << '\n';
+        return false;
+    }
+    const auto result = exec({"sudo", "-v"});
+    if (result.code != 0) {
+        std::cerr << RED << "❌ Не удалось подтвердить права sudo" << RESET << '\n';
+        return false;
+    }
+    return true;
 }
 
 bool sql_exec(sqlite3 *database, const char *sql) {
@@ -288,8 +308,8 @@ void write(const fs::path &path, const std::string &content) {
     fs::rename(temporary, path);
 }
 
-Result exec(const std::vector<std::string> &args, bool capture = false,
-            const fs::path &directory = {}) {
+Result exec(const std::vector<std::string> &args, bool capture,
+            const fs::path &directory) {
     if (args.empty()) return {1, {}};
     int pipefd[2] = {-1, -1};
     if (capture && pipe(pipefd) != 0) return {1, {}};
@@ -336,16 +356,52 @@ Result exec_with_spinner(const std::vector<std::string> &args, const std::string
         result = exec(args, capture, directory);
         finished = true;
     });
-    constexpr const char *frames[] = {"🐙", "🦑", "🐙", "🦑"};
-    size_t frame = 0;
+    const auto started = std::chrono::steady_clock::now();
     while (!finished) {
-        std::cout << '\r' << CYAN << frames[frame++ % 4] << ' ' << label
-                  << "...   " << RESET << std::flush;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        const size_t octopus_count = std::min<size_t>(9, static_cast<size_t>(elapsed / 400) + 1);
+        const int percent = static_cast<int>(octopus_count) * 10;
+        std::string octopuses;
+        for (size_t index = 0; index < octopus_count; ++index) octopuses += "🐙";
+        std::string empty_slots;
+        for (size_t index = octopus_count; index < 10; ++index) empty_slots += "·";
+        const std::string bar = "| " + octopuses + empty_slots +
+            " | " + std::to_string(percent) + "% |";
+        std::cout << '\r' << CYAN << label << "... " << bar << RESET << std::flush;
         std::this_thread::sleep_for(std::chrono::milliseconds(180));
     }
     worker.join();
-    std::cout << '\r' << std::string(64, ' ') << '\r' << std::flush;
+    if (!result.code)
+        std::cout << '\r' << CYAN << label << "... | 🐙🐙🐙🐙🐙🐙🐙🐙🐙🐙 | 100% |"
+                  << RESET << '\n';
+    else
+        std::cout << '\r' << RED << label << "... ошибка выполнения (0%)" << RESET << '\n';
     return result;
+}
+
+void print_command_failure(const std::string &label, const Result &result) {
+    std::cerr << RED << "❌ " << label << " не выполнено (код " << result.code << ")" << RESET << '\n';
+    if (!result.output.empty()) {
+        std::cerr << YELLOW << "Вывод команды для диагностики:" << RESET << '\n'
+                  << result.output;
+        if (result.output.back() != '\n') std::cerr << '\n';
+    }
+}
+
+void print_install_stage(const std::string &stage) {
+    std::cout << "🐙 " << stage << "... ✅\n";
+}
+
+void print_install_stage(const std::string &stage, double seconds) {
+    std::ostringstream elapsed;
+    elapsed << std::fixed << std::setprecision(1) << seconds;
+    std::cout << "🐙 " << stage << "... ✅ (" << elapsed.str() << "s)\n";
+}
+
+void print_package_not_found(const std::string &package) {
+    std::cerr << RED << "❌ ОШИБКА: Пакет не найден!" << RESET << '\n'
+              << "🐙 Попробуй: octo щупальца " << package << '\n';
 }
 
 bool valid(const std::string &value) {
@@ -629,21 +685,24 @@ int aur_info(const std::string &package) {
 
 int package_size(const std::string &package) {
     if (!valid(package)) return 2;
-    const auto installed = exec({"pacman", "-Qi", package}, true);
-    if (!installed.code) {
-        const std::regex size_pattern("Installed Size\\s*:\\s*(.+)");
+    const std::regex size_pattern("(?:Installed Size|Download Size)\\s*:\\s*(.+)");
+    for (const auto &query : {std::vector<std::string>{"pacman", "-Qi", package},
+                              std::vector<std::string>{"pacman", "-Si", package}}) {
+        const auto result = exec(query, true);
         std::smatch match;
-        if (std::regex_search(installed.output, match, size_pattern)) {
-            std::cout << "📦 " << package << ": " << match[1].str() << '\n';
+        if (!result.code && std::regex_search(result.output, match, size_pattern)) {
+            std::cout << CYAN << "📦 Пакет: " << package << " [офиц.] (" << match[1].str() << ")"
+                      << RESET << '\n';
             return 0;
         }
     }
     const auto aur = aur_request("https://aur.archlinux.org/rpc/v5/info?arg=" + encode(package));
     if (!json_field(aur.output, "Name").empty()) {
-        std::cout << "📦 " << package << ": размер исходников не предоставляется AUR API\n";
+        std::cout << CYAN << "📦 Пакет: " << package
+                  << " [AUR] (размер исходников не предоставляется AUR API)" << RESET << '\n';
         return 0;
     }
-    std::cerr << RED << "❌ Пакет не найден: " << package << RESET << '\n';
+    print_package_not_found(package);
     return 1;
 }
 
@@ -659,12 +718,35 @@ int package_popularity(const std::string &package) {
     return 0;
 }
 
-int install_package(const std::string &name, bool aur) {
-    if (!valid(name)) return 2;
+int install_package(const std::vector<std::string> &packages, bool aur) {
+    if (packages.empty() || std::any_of(packages.begin(), packages.end(),
+                                        [](const std::string &package) { return !valid(package); })) return 2;
+    const std::string &name = packages.front();
+    if (!aur) {
+        for (const auto &package : packages) {
+            const auto official = exec({"pacman", "-Si", package}, true);
+            if (official.code) {
+                const auto aur_info_result = aur_request(
+                    "https://aur.archlinux.org/rpc/v5/info?arg=" + encode(package));
+                if (!aur_info_result.code && !json_field(aur_info_result.output, "Name").empty()) {
+                    aur = true;
+                    break;
+                }
+                print_package_not_found(package);
+                return 1;
+            }
+        }
+    }
+    std::ostringstream package_list;
+    for (size_t index = 0; index < packages.size(); ++index) {
+        if (index) package_list << ", ";
+        package_list << packages[index];
+    }
     std::cout << CYAN << "🐙 ОСЬМИНОГ ЛОВИТ ПАКЕТЫ..." << RESET << '\n'
               << "🌊 Океан установки...\n"
-              << "📦 Пакет: " << name << (aur ? " [AUR]" : " [офиц.]") << '\n';
+              << "📦 Пакеты: " << package_list.str() << (aur ? " [AUR]" : " [офиц.]") << '\n';
     if (!yes("Продолжить?")) return 0;
+    if (!authenticate_sudo()) return 1;
     if (backup() != 0) {
         log_error("automatic backup failed before install: " + name);
         return 1;
@@ -672,8 +754,20 @@ int install_package(const std::string &name, bool aur) {
     Result result;
     if (!aur) {
         std::cout << "🐙 Щупальца тянутся к официальному репозиторию...\n";
-        result = exec_with_spinner(sudo_pacman({"-S", "--noconfirm", name}),
-                                   "Осьминог устанавливает пакет", true);
+        print_install_stage("Проверяет зависимости");
+        print_install_stage("Проверяет конфликты");
+        const auto started = std::chrono::steady_clock::now();
+        std::vector<std::string> command{"-S"};
+        command.insert(command.end(), packages.begin(), packages.end());
+        result = exec_with_spinner(sudo_pacman(command),
+                                   "Скачивает пакет", true);
+        if (!result.code) {
+            print_install_stage("Проверяет ключи");
+            const auto seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - started).count();
+            print_install_stage("Устанавливает пакет", seconds);
+            print_install_stage("Завершает установку");
+        }
     } else {
         const fs::path directory = fs::path("/tmp") / ("octo-" + name);
         fs::remove_all(directory);
@@ -687,18 +781,23 @@ int install_package(const std::string &name, bool aur) {
         }
         fs::remove_all(directory);
     }
-    if (!result.output.empty()) std::cout << result.output;
     if (!result.code) {
-        package_add(name, aur);
-        log_action(aur ? "install" : "install", "installed " + name + (aur ? " from AUR" : " from official repository"));
-        std::cout << GREEN << "✅ Пакет пойман! 🎉\n🐙 " << name << " установлен!" << RESET << '\n';
-    } else log_error("install failed: " + name);
+        for (const auto &package : packages) package_add(package, aur);
+        log_action("install", "installed " + package_list.str() +
+            (aur ? " from AUR" : " from official repository"));
+        std::cout << GREEN << "✅ Пакеты пойманы! 🎉\n🐙 " << package_list.str()
+                  << " установлены!" << RESET << '\n';
+    } else {
+        print_command_failure("Установка пакетов", result);
+        log_error("install failed: " + package_list.str());
+    }
     return result.code;
 }
 
 int remove_package(const std::string &name, bool dependencies) {
     if (!valid(name)) return 2;
     if (!yes("🐙 Отпустить пакет " + name + "?")) return 0;
+    if (!authenticate_sudo()) return 1;
     if (backup() != 0) {
         log_error("automatic backup failed before remove: " + name);
         return 1;
@@ -706,12 +805,14 @@ int remove_package(const std::string &name, bool dependencies) {
     const auto result = exec_with_spinner(
         sudo_pacman({dependencies ? "-Rsc" : "-R", name}),
         "Осьминог отпускает пакет", true);
-    if (!result.output.empty()) std::cout << result.output;
     if (!result.code) {
         package_remove(name);
         log_action("remove", "removed " + name);
         std::cout << GREEN << "✅ Удалено" << RESET << '\n';
-    } else log_error("remove failed: " + name);
+    } else {
+        print_command_failure("Удаление пакета", result);
+        log_error("remove failed: " + name);
+    }
     return result.code;
 }
 
@@ -779,8 +880,14 @@ int restore_backup(const fs::path &backup_file) {
         std::string package;
         fields >> package;
         if (!valid(package)) continue;
-        if (exec({"pacman", "-Q", package}, true).code != 0)
-            result = std::max(result, exec(sudo_pacman({"-S", "--noconfirm", package}), tui_mode()).code);
+        if (exec({"pacman", "-Q", package}, true).code != 0) {
+            const auto install = exec_with_spinner(sudo_pacman({"-S", package}),
+                                                    "Осьминог восстанавливает пакет", true);
+            if (install.code) {
+                print_command_failure("Восстановление пакета " + package, install);
+                result = std::max(result, install.code);
+            }
+        }
     }
     return result;
 }
@@ -898,10 +1005,12 @@ int dispatch(const std::vector<std::string> &a) {
     if (args[0] == "install" || args[0] == "-S" || args[0] == "catch") {
         const bool aur = args[0] == "catch" || std::any_of(args.begin() + 1, args.end(),
             [](const std::string &arg) { return arg == "--aur" || arg == "-a"; });
-        if (args[0] == "catch") return args.size() > 1 ? install_package(args[1], true) : 2;
-        const auto package = std::find_if(args.begin() + 1, args.end(),
-            [](const std::string &arg) { return arg != "--aur" && arg != "-a"; });
-        return package != args.end() ? install_package(*package, aur) : 2;
+        if (args[0] == "catch")
+            return args.size() > 1 ? install_package({args[1]}, true) : 2;
+        std::vector<std::string> packages;
+        for (auto it = args.begin() + 1; it != args.end(); ++it)
+            if (*it != "--aur" && *it != "-a") packages.push_back(*it);
+        return packages.empty() ? 2 : install_package(packages, aur);
     }
     if (args[0] == "алиас" || args[0] == "alias") return aliases_command(args);
     if (args[0] == "настройки" || args[0] == "config") {
@@ -916,14 +1025,17 @@ int dispatch(const std::vector<std::string> &a) {
         return 2;
     }
     if (args[0] == "update" || args[0] == "-Syu") {
+        if (!authenticate_sudo()) return 1;
         if (backup() != 0) {
             log_error("automatic backup failed before update");
             return 1;
         }
         const auto result = exec_with_spinner(sudo_pacman({"-Syu"}),
                                               "Осьминог обновляет систему", true);
-        if (tui_mode() && !result.output.empty()) std::cout << result.output;
-        if (result.code) log_error("update failed"); else log_action("update", "system updated");
+        if (result.code) {
+            print_command_failure("Обновление системы", result);
+            log_error("update failed");
+        } else log_action("update", "system updated");
         return result.code;
     }
     if (args[0] == "remove" || args[0] == "release" || args[0] == "-R") {
@@ -963,6 +1075,7 @@ int dispatch(const std::vector<std::string> &a) {
     if (args[0] == "backup") return backup();
     if (args[0] == "restore") {
         if (args.size() <= 1) return 2;
+        if (!authenticate_sudo()) return 1;
         fs::path backup_file = args[1];
         if (!backup_file.is_absolute() && !fs::is_regular_file(backup_file)) backup_file = backups() / backup_file;
         return restore_backup(backup_file);
@@ -1012,14 +1125,17 @@ int dispatch(const std::vector<std::string> &a) {
         return 0;
     }
     if (args[0] == "army") {
+        if (!authenticate_sudo()) return 1;
         if (backup() != 0) {
             log_error("automatic backup failed before army update");
             return 1;
         }
         const auto result = exec_with_spinner(sudo_pacman({"-Syu"}),
                                               "Осьминог обновляет армию", true);
-        if (tui_mode() && !result.output.empty()) std::cout << result.output;
-        if (result.code) log_error("army update failed"); else log_action("update", "army update completed");
+        if (result.code) {
+            print_command_failure("Обновление армии", result);
+            log_error("army update failed");
+        } else log_action("update", "army update completed");
         return result.code;
     }
     log_error("unknown command: " + args[0]);

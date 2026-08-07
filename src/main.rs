@@ -92,7 +92,6 @@ struct ConfirmModal {
 }
 
 struct ProgressState {
-    label: String,
     started: Instant,
     stage_duration: Duration,
     stage: usize,
@@ -318,7 +317,6 @@ fn start_aur_search(app: &mut App) {
     app.aur_loading = true;
     app.aur_receiver = Some(receiver);
     app.progress = Some(ProgressState {
-        label: "Поиск в океане AUR".into(),
         started: Instant::now(),
         stage_duration: Duration::from_millis(850),
         stage: 0,
@@ -728,10 +726,8 @@ fn start_pending_action(app: &mut App, action: PendingAction, password: Option<S
     };
     let (sender, receiver) = mpsc::channel();
     let needs_sudo = password.is_some();
-    let progress_label = label.clone();
     app.action_receiver = Some(receiver);
     app.progress = Some(ProgressState {
-        label: progress_label.clone(),
         started: Instant::now(),
         stage_duration: Duration::from_secs(2),
         stage: 0,
@@ -1352,13 +1348,12 @@ fn panel<'a>(title: &'a str, color: Color) -> Block<'a> {
 fn draw_progress(frame: &mut ratatui::Frame, area: Rect, progress: &ProgressState) {
     let elapsed = progress.started.elapsed().as_secs_f64();
     let stage_total = progress.stage_duration.as_secs_f64().max(0.1);
-    let stage_ratio = (elapsed / stage_total).fract();
-    let ratio = ((progress.stage as f64 + stage_ratio) / 4.0).clamp(0.0, 0.99);
+    let ratio = (elapsed / (stage_total * 4.0)).clamp(0.0, 1.0);
     let progress_area = Rect {
         x: area.x + area.width / 4,
         y: area.y + area.height.saturating_sub(4),
         width: area.width / 2,
-        height: 5,
+        height: 4,
     };
     let stages = [
         "🌊 Океан поиска…",
@@ -1366,31 +1361,23 @@ fn draw_progress(frame: &mut ratatui::Frame, area: Rect, progress: &ProgressStat
         "🦑 Проверка зависимостей…",
         "🐙 Выполнение операции…",
     ];
-    let octopus_count = ((ratio * 10.0) as usize).clamp(1, 10);
-    let moving_octopus = ["🐙", "🦑", "🐙", "🦑"][progress.frame];
+    let percent = (ratio * 100.0).round() as u16;
+    let octopus_count = ((percent as usize + 9) / 10).clamp(1, 10);
     let octopus_bar = format!(
-        "{}{}{}",
-        "🐙".repeat(octopus_count.saturating_sub(1)),
-        moving_octopus,
-        "·".repeat(10usize.saturating_sub(octopus_count))
+        "| {}{} | {:>3}% |",
+        "🐙".repeat(octopus_count),
+        "·".repeat(10usize.saturating_sub(octopus_count)),
+        percent
     );
-    let label = format!(
-        "{}  {}  {}%",
-        stages[progress.stage.min(stages.len() - 1)],
-        octopus_bar,
-        (ratio * 100.0) as u16
-    );
+    let stage = stages[progress.stage.min(stages.len() - 1)];
     frame.render_widget(
-        Gauge::default()
-            .block(panel(label.as_str(), ORANGE))
-            .gauge_style(
-                Style::default()
-                    .fg(ORANGE)
-                    .bg(BLUE)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .ratio(ratio)
-            .label(format!("🐙 {}", progress.label)),
+        Paragraph::new(Line::from(Span::styled(
+            octopus_bar,
+            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
+        )))
+        .block(panel(stage, ORANGE))
+        .style(Style::default().bg(BLUE))
+        .alignment(ratatui::layout::Alignment::Center),
         progress_area,
     );
 }
